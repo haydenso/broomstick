@@ -52,7 +52,6 @@ MANAGER_PATHS = {
     "uv": ["~/.local/share/uv/venvs", "~/.cache/uv/venvs"],
 }
 
-# System Python paths to avoid deleting
 SYSTEM_PYTHON_PATHS = [
     "/usr/bin/python", "/usr/bin/python2", "/usr/bin/python3",
     "/System/Library/Frameworks/Python.framework",
@@ -60,10 +59,7 @@ SYSTEM_PYTHON_PATHS = [
     "C:\\Windows\\System32", "C:\\Python",
 ]
 
-# Project venv names to look for
 PROJECT_VENV_NAMES = [".venv", "venv", "env", ".env", "virtualenv"]
-
-# Default scan paths
 DEFAULT_SCAN_PATHS = ["~"]
 
 # ============================================================================
@@ -134,10 +130,8 @@ def run_python_command(python_exec: str, cmd: str, timeout: int = 10) -> Optiona
 def get_project_name(venv_path: str) -> str:
     """Try to infer project name from venv path."""
     path = Path(venv_path)
-    # If it's a .venv in a project folder, return project name
     if path.name in PROJECT_VENV_NAMES:
         return path.parent.name
-    # Otherwise return the venv dir name
     return path.name
 
 def shorten_path(path: str, max_len: int = 50) -> str:
@@ -401,7 +395,6 @@ def find_venvs(scan_path: Optional[str] = None, use_mdfind: bool = False, max_de
     venvs = []
     found_paths: Set[str] = set()
     
-    # 1. Check manager-specific paths
     for manager, paths in MANAGER_PATHS.items():
         for path_template in paths:
             path = os.path.expanduser(path_template)
@@ -418,7 +411,6 @@ def find_venvs(scan_path: Optional[str] = None, use_mdfind: bool = False, max_de
             except PermissionError:
                 continue
     
-    # 2. Scan specific path or home directory for project venvs
     scan_root = os.path.expanduser(scan_path) if scan_path else os.path.expanduser("~")
     
     def scan_dir(root: str, depth: int = 0):
@@ -431,29 +423,24 @@ def find_venvs(scan_path: Optional[str] = None, use_mdfind: bool = False, max_de
                 if not entry.is_dir(follow_symlinks=False):
                     continue
                 
-                # Skip hidden dirs except project venv names
                 if entry.name.startswith('.') and entry.name not in PROJECT_VENV_NAMES:
                     continue
                 
-                # Skip common large dirs
                 if entry.name in ['node_modules', 'Library', 'Applications', '.git', '__pycache__']:
                     continue
                 
-                # Check if this is a venv
                 if is_venv(entry.path):
                     abs_path = os.path.abspath(entry.path)
                     if abs_path not in found_paths:
                         found_paths.add(abs_path)
                         venvs.append(VirtualEnv(abs_path))
                 else:
-                    # Recurse into subdirectories
                     scan_dir(entry.path, depth + 1)
         except PermissionError:
             pass
     
     scan_dir(scan_root)
     
-    # 3. Use mdfind on macOS for fast discovery
     if use_mdfind and platform.system() == 'Darwin':
         try:
             result = subprocess.run(
@@ -526,322 +513,550 @@ class PackageAnalyzer:
         return results
 
 # ============================================================================
-# Interactive TUI
+# Interactive TUI - Mole-Inspired Mode System
 # ============================================================================
 
 class BroomstickTUI:
-    """Interactive terminal UI for browsing and cleaning."""
+    """Interactive terminal UI with Mole-inspired modes."""
     
     def __init__(self, interpreters: List[PythonInterpreter], venvs: List[VirtualEnv]):
         self.interpreters = interpreters
         self.venvs = venvs
-        self.current_view = 'main'
+        self.mode = None  # Current mode: list, delete, explore, package
+        self.current_view = 'mode_select'
         self.selected_venv: Optional[VirtualEnv] = None
         self.cursor = 0
         self.scroll_offset = 0
         self.selected_items: Set[int] = set()
-        self.search_query = ""
         self.breadcrumb = []
+        self.show_help = False
     
     def run(self, stdscr):
         """Main TUI loop."""
         curses.curs_set(0)
-        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
-        curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)
-        curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)
-        curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)
-        curses.init_pair(5, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)   # Selected
+        curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)     # Warning/Delete
+        curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)   # Success
+        curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)    # Info
+        curses.init_pair(5, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Highlight
+        curses.init_pair(6, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # Special
         
         while True:
             stdscr.clear()
             height, width = stdscr.getmaxyx()
             
-            # Draw breadcrumb
-            self._draw_breadcrumb(stdscr, width)
-            
-            if self.current_view == 'main':
-                self._draw_main_menu(stdscr, height, width)
-            elif self.current_view == 'interpreters':
-                self._draw_interpreters(stdscr, height, width)
-            elif self.current_view == 'venvs':
-                self._draw_venvs(stdscr, height, width)
-            elif self.current_view == 'packages':
-                self._draw_packages(stdscr, height, width)
-            elif self.current_view == 'venv_detail':
-                self._draw_venv_detail(stdscr, height, width)
+            # Draw based on current view
+            if self.current_view == 'mode_select':
+                self._draw_mode_select(stdscr, height, width)
+            else:
+                # Draw header with mode indicator
+                self._draw_header(stdscr, width)
+                
+                # Draw content based on view
+                if self.current_view == 'category_select':
+                    self._draw_category_select(stdscr, height, width)
+                elif self.current_view == 'interpreters':
+                    self._draw_interpreters(stdscr, height, width)
+                elif self.current_view == 'venvs':
+                    self._draw_venvs(stdscr, height, width)
+                elif self.current_view == 'venv_detail':
+                    self._draw_venv_detail(stdscr, height, width)
+                elif self.current_view == 'analysis':
+                    self._draw_analysis(stdscr, height, width)
             
             stdscr.refresh()
             
+            # Handle input
             key = stdscr.getch()
             if key == ord('q'):
-                if len(self.breadcrumb) > 0:
+                if len(self.breadcrumb) > 0 or self.current_view != 'mode_select':
                     self._go_back()
                 else:
                     break
             elif key == curses.KEY_UP:
                 self.cursor = max(0, self.cursor - 1)
+                self._adjust_scroll()
             elif key == curses.KEY_DOWN:
                 self.cursor += 1
+                self._adjust_scroll()
             elif key == ord('\n') or key == curses.KEY_ENTER or key == 10:
                 self._handle_enter()
-            elif key == ord(' '):
+            elif key == ord(' ') and self.mode in ['delete', 'package']:
                 self._toggle_selection()
-            elif key == ord('d'):
-                self._mark_for_deletion()
+            elif key == ord('d') and self.mode == 'delete':
+                self._confirm_delete(stdscr)
+            elif key == ord('u') and self.mode == 'package':
+                self._confirm_uninstall(stdscr)
             elif key == 27:  # ESC
                 self._go_back()
-            elif key == ord('/'):
-                self._start_search(stdscr)
+            elif key == ord('h') or key == ord('?'):
+                self.show_help = not self.show_help
     
-    def _draw_breadcrumb(self, stdscr, width):
-        """Draw navigation breadcrumb."""
-        if not self.breadcrumb:
-            return
-        
-        crumb = " > ".join(self.breadcrumb)
-        if len(crumb) > width - 4:
-            crumb = "..." + crumb[-(width-7):]
-        stdscr.addstr(0, 2, crumb, curses.color_pair(4))
+    def _adjust_scroll(self):
+        """Adjust scroll offset to keep cursor visible."""
+        # This will be refined per view
+        pass
     
-    def _draw_main_menu(self, stdscr, height, width):
-        title = "BROOMSTICK - Python Environment Cleaner"
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, (width - len(title)) // 2, title, curses.A_BOLD)
-        
-        menu_items = [
-            f"1. Python Interpreters ({len(self.interpreters)} found)",
-            f"2. Virtual Environments ({len(self.venvs)} found)",
-            "3. Package Analysis",
-            "4. Search",
-            "5. Quit",
+    def _draw_mode_select(self, stdscr, height, width):
+        """Draw the initial mode selection screen (Mole-style)."""
+        # Title
+        title_lines = [
+            "╔════════════════════════════════════════════════════════════════╗",
+            "║                                                                ║",
+            "║                  🧹  BROOMSTICK  🧹                           ║",
+            "║                                                                ║",
+            "║           Python Environment & Package Cleaner                 ║",
+            "║                                                                ║",
+            "╚════════════════════════════════════════════════════════════════╝",
         ]
         
-        item_y = start_y + 3
-        for i, item in enumerate(menu_items):
-            attr = curses.color_pair(1) if i == self.cursor else curses.A_NORMAL
-            stdscr.addstr(item_y + i, 2, item, attr)
+        y = max(0, (height - 25) // 2)
+        for i, line in enumerate(title_lines):
+            x = max(0, (width - len(line)) // 2)
+            try:
+                stdscr.addstr(y + i, x, line, curses.color_pair(4) | curses.A_BOLD)
+            except curses.error:
+                pass
         
-        stdscr.addstr(height - 2, 2, "Use ↑/↓ to navigate, Enter to select, 'q' to quit, '/' to search")
+        y += len(title_lines) + 2
+        
+        # Stats
+        stats_y = y
+        total_size = sum(v.size_bytes for v in self.venvs)
+        interp_size = sum(i.size_bytes for i in self.interpreters)
+        
+        stats = [
+            f"Found: {len(self.interpreters)} Python interpreters ({format_bytes(interp_size)})",
+            f"Found: {len(self.venvs)} virtual environments ({format_bytes(total_size)})",
+        ]
+        
+        for i, stat in enumerate(stats):
+            x = (width - len(stat)) // 2
+            try:
+                stdscr.addstr(stats_y + i, x, stat, curses.color_pair(3))
+            except curses.error:
+                pass
+        
+        y = stats_y + len(stats) + 2
+        
+        # Mode selection
+        mode_header = "Select Mode:"
+        x = (width - len(mode_header)) // 2
+        try:
+            stdscr.addstr(y, x, mode_header, curses.A_BOLD)
+        except curses.error:
+            pass
+        
+        y += 2
+        
+        modes = [
+            ("List Mode", "Browse and explore environments (read-only)"),
+            ("Delete Mode", "Remove unwanted environments and packages"),
+            ("Analyze Mode", "Deep analysis of packages and duplicates"),
+            ("Package Manager", "Manage packages within environments"),
+            ("Quit", "Exit Broomstick"),
+        ]
+        
+        for i, (name, desc) in enumerate(modes):
+            is_selected = i == self.cursor
+            
+            if is_selected:
+                attr = curses.color_pair(1) | curses.A_BOLD
+            else:
+                attr = curses.A_NORMAL
+            
+            # Mode name
+            mode_text = f"  {i + 1}. {name}"
+            x = (width - 60) // 2
+            try:
+                stdscr.addstr(y + i * 3, x, mode_text, attr)
+            except curses.error:
+                pass
+            
+            # Description
+            desc_text = f"     {desc}"
+            desc_attr = curses.color_pair(4) if is_selected else curses.color_pair(4) | curses.A_DIM
+            try:
+                stdscr.addstr(y + i * 3 + 1, x, desc_text, desc_attr)
+            except curses.error:
+                pass
+        
+        # Help text
+        help_y = height - 3
+        help_text = "Use ↑/↓ to navigate, Enter to select, 'q' to quit"
+        x = (width - len(help_text)) // 2
+        try:
+            stdscr.addstr(help_y, x, help_text, curses.color_pair(5))
+        except curses.error:
+            pass
+    
+    def _draw_header(self, stdscr, width):
+        """Draw header with mode and breadcrumb."""
+        if not self.mode:
+            return
+        
+        # Mode indicator
+        mode_names = {
+            'list': '📋 LIST MODE',
+            'delete': '🗑️  DELETE MODE',
+            'explore': '🔍 ANALYZE MODE',
+            'package': '📦 PACKAGE MANAGER'
+        }
+        
+        mode_text = mode_names.get(self.mode, 'BROOMSTICK')
+        try:
+            stdscr.addstr(0, 2, mode_text, curses.color_pair(5) | curses.A_BOLD)
+        except curses.error:
+            pass
+        
+        # Breadcrumb
+        if self.breadcrumb:
+            crumb = " > ".join(self.breadcrumb)
+            if len(crumb) > width - len(mode_text) - 10:
+                crumb = "..." + crumb[-(width - len(mode_text) - 13):]
+            try:
+                stdscr.addstr(1, 2, crumb, curses.color_pair(4))
+            except curses.error:
+                pass
+    
+    def _draw_category_select(self, stdscr, height, width):
+        """Draw category selection (Interpreters vs Venvs)."""
+        start_y = 4
+        
+        title = "What would you like to manage?"
+        try:
+            stdscr.addstr(start_y, (width - len(title)) // 2, title, curses.A_BOLD)
+        except curses.error:
+            pass
+        
+        start_y += 3
+        
+        categories = [
+            ("Python Interpreters", f"{len(self.interpreters)} found"),
+            ("Virtual Environments", f"{len(self.venvs)} found"),
+        ]
+        
+        if self.mode == 'explore':
+            categories.append(("Package Analysis", "Duplicates & conflicts"))
+        
+        for i, (name, count) in enumerate(categories):
+            is_selected = i == self.cursor
+            attr = curses.color_pair(1) if is_selected else curses.A_NORMAL
+            
+            line = f"  {i + 1}. {name:<30} ({count})"
+            try:
+                stdscr.addstr(start_y + i * 2, 5, line, attr)
+            except curses.error:
+                pass
+        
+        # Mode-specific help
+        help_y = height - 3
+        if self.mode == 'delete':
+            help_text = "Space: mark | d: delete marked | Enter: select | ESC: back"
+        elif self.mode == 'package':
+            help_text = "Enter: view packages | Space: mark | u: uninstall | ESC: back"
+        else:
+            help_text = "Enter: view details | ESC: back | q: quit"
+        
+        try:
+            stdscr.addstr(help_y, 2, help_text[:width-4], curses.color_pair(5))
+        except curses.error:
+            pass
     
     def _draw_interpreters(self, stdscr, height, width):
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, 0, "Python Interpreters", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
+        """Draw Python interpreters list."""
+        start_y = 4
         
-        list_height = height - start_y - 5
+        try:
+            stdscr.addstr(start_y, 2, "Python Interpreters", curses.A_BOLD)
+            stdscr.addstr(start_y + 1, 2, "─" * min(width - 4, 76))
+        except curses.error:
+            pass
+        
+        list_y = start_y + 3
+        list_height = height - list_y - 4
+        
         visible_items = self.interpreters[self.scroll_offset:self.scroll_offset + list_height]
         
         for i, interp in enumerate(visible_items):
-            y = start_y + i + 2
-            if y >= height - 3:
+            y = list_y + i
+            if y >= height - 4:
                 break
             
             idx = self.scroll_offset + i
             is_selected = idx == self.cursor
             is_marked = idx in self.selected_items
             
+            # Build line
+            prefix = "[X] " if is_marked and self.mode == 'delete' else "[ ] " if self.mode == 'delete' else "  "
             manager = f"[{interp.manager}]".ljust(12)
             size = format_bytes(interp.size_bytes).rjust(10)
-            version = (interp.version or "unknown")[:40]
+            version = (interp.version or "unknown")[:35]
             
-            line = f"{manager} {size}  {version}"
-            if len(line) > width - 4:
-                line = line[:width - 4]
+            line = f"{prefix}{manager} {size}  {version}"
             
-            prefix = "[X] " if is_marked else "[ ] "
-            
-            attr = curses.color_pair(1) if is_selected else curses.A_NORMAL
-            if interp.is_system:
-                attr |= curses.color_pair(2)
+            # Color coding
+            if is_selected:
+                attr = curses.color_pair(1)
+            elif interp.is_system:
+                attr = curses.color_pair(2)
+            else:
+                attr = curses.A_NORMAL
             
             try:
-                stdscr.addstr(y, 2, prefix + line, attr)
+                stdscr.addstr(y, 2, line[:width-4], attr)
             except curses.error:
                 pass
         
-        status = f"↑/↓: navigate | Space: mark | d: delete | ESC: back | {len(self.selected_items)} marked"
-        stdscr.addstr(height - 1, 0, status[:width-1])
+        # Footer
+        self._draw_footer(stdscr, height, width)
     
     def _draw_venvs(self, stdscr, height, width):
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, 0, "Virtual Environments", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
+        """Draw virtual environments list."""
+        start_y = 4
         
-        list_height = height - start_y - 5
+        try:
+            stdscr.addstr(start_y, 2, "Virtual Environments", curses.A_BOLD)
+            stdscr.addstr(start_y + 1, 2, "─" * min(width - 4, 76))
+        except curses.error:
+            pass
+        
+        list_y = start_y + 3
+        list_height = height - list_y - 4
+        
         visible_items = self.venvs[self.scroll_offset:self.scroll_offset + list_height]
         
         for i, venv in enumerate(visible_items):
-            y = start_y + i + 2
-            if y >= height - 3:
+            y = list_y + i
+            if y >= height - 4:
                 break
             
             idx = self.scroll_offset + i
             is_selected = idx == self.cursor
             is_marked = idx in self.selected_items
             
+            # Build line
+            prefix = "[X] " if is_marked and self.mode in ['delete', 'package'] else "[ ] " if self.mode in ['delete', 'package'] else "  "
             manager = f"[{venv.manager}]".ljust(10)
             size = format_bytes(venv.size_bytes).rjust(9)
             age = format_datetime(venv.last_modified).rjust(8)
-            proj = venv.project_name[:25]
+            project = venv.project_name[:25]
             
-            line = f"{manager} {size} {age}  {proj}"
-            if len(line) > width - 4:
-                line = line[:width - 4]
+            line = f"{prefix}{manager} {size} {age}  {project}"
             
-            prefix = "[X] " if is_marked else "[ ] "
-            
-            attr = curses.color_pair(1) if is_selected else curses.A_NORMAL
+            # Color coding
+            if is_selected:
+                attr = curses.color_pair(1)
+            else:
+                attr = curses.A_NORMAL
             
             try:
-                stdscr.addstr(y, 2, prefix + line, attr)
+                stdscr.addstr(y, 2, line[:width-4], attr)
             except curses.error:
                 pass
         
-        total_size = sum(v.size_bytes for v in self.venvs)
-        marked_size = sum(self.venvs[i].size_bytes for i in self.selected_items if i < len(self.venvs))
-        status = f"Total: {format_bytes(total_size)} | Marked: {format_bytes(marked_size)} | Space: mark | Enter: detail | d: delete | ESC: back"
-        stdscr.addstr(height - 1, 0, status[:width-1])
+        # Footer
+        self._draw_footer(stdscr, height, width)
     
     def _draw_venv_detail(self, stdscr, height, width):
-        """Show detailed view of a venv with its packages."""
+        """Draw detailed venv view with packages."""
         if not self.selected_venv:
             self._go_back()
             return
         
         venv = self.selected_venv
-        start_y = 2 if self.breadcrumb else 0
+        start_y = 4
         
         # Header
-        stdscr.addstr(start_y, 0, f"Virtual Environment: {venv.project_name}", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
+        try:
+            stdscr.addstr(start_y, 2, f"Virtual Environment: {venv.project_name}", curses.A_BOLD)
+            stdscr.addstr(start_y + 1, 2, "─" * min(width - 4, 76))
+        except curses.error:
+            pass
         
         # Details
         y = start_y + 3
-        stdscr.addstr(y, 2, f"Path: {shorten_path(venv.path, width - 10)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Manager: {venv.manager}")
-        y += 1
-        stdscr.addstr(y, 2, f"Size: {format_bytes(venv.size_bytes)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Modified: {format_datetime(venv.last_modified)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Python: {venv.python_version or 'unknown'}")
-        y += 2
+        details = [
+            f"Path: {shorten_path(venv.path, width - 12)}",
+            f"Manager: {venv.manager}",
+            f"Size: {format_bytes(venv.size_bytes)}",
+            f"Age: {format_datetime(venv.last_modified)}",
+            f"Python: {venv.python_version or 'unknown'}",
+        ]
         
-        # Load packages if not loaded
+        for detail in details:
+            try:
+                stdscr.addstr(y, 4, detail[:width-6], curses.color_pair(4))
+            except curses.error:
+                pass
+            y += 1
+        
+        y += 1
+        
+        # Load packages if needed
         if not venv.packages_loaded:
-            stdscr.addstr(y, 2, "Loading packages...", curses.color_pair(5))
+            try:
+                stdscr.addstr(y, 4, "Loading packages...", curses.color_pair(5))
+            except curses.error:
+                pass
             stdscr.refresh()
             venv.probe_packages()
         
         # Package list
-        stdscr.addstr(y, 2, f"Packages ({len(venv.packages)}):", curses.A_BOLD)
-        y += 1
-        stdscr.addstr(y, 2, "-" * min(width - 4, 76))
+        try:
+            stdscr.addstr(y, 2, f"Packages ({len(venv.packages)}):", curses.A_BOLD)
+            y += 1
+            stdscr.addstr(y, 2, "─" * min(width - 4, 76))
+        except curses.error:
+            pass
         y += 1
         
-        list_height = height - y - 3
+        list_height = height - y - 4
         visible_pkgs = venv.packages[self.scroll_offset:self.scroll_offset + list_height]
         
         for i, pkg in enumerate(visible_pkgs):
-            if y >= height - 3:
+            pkg_y = y + i
+            if pkg_y >= height - 4:
                 break
             
             idx = self.scroll_offset + i
             is_selected = idx == self.cursor
             is_marked = idx in self.selected_items
             
-            pkg_line = f"{pkg.name.ljust(30)} {pkg.version.ljust(15)}"
-            if len(pkg_line) > width - 8:
-                pkg_line = pkg_line[:width - 8]
+            prefix = "[X] " if is_marked and self.mode == 'package' else "[ ] " if self.mode == 'package' else "  "
+            pkg_line = f"{prefix}{pkg.name.ljust(30)} {pkg.version.ljust(15)}"
             
-            prefix = "[X] " if is_marked else "[ ] "
             attr = curses.color_pair(1) if is_selected else curses.A_NORMAL
             
             try:
-                stdscr.addstr(y, 4, prefix + pkg_line, attr)
+                stdscr.addstr(pkg_y, 4, pkg_line[:width-6], attr)
             except curses.error:
                 pass
-            y += 1
         
-        status = f"Space: mark packages | d: uninstall marked | ESC: back | {len(self.selected_items)} marked"
-        stdscr.addstr(height - 1, 0, status[:width-1])
+        # Footer
+        self._draw_footer(stdscr, height, width)
     
-    def _draw_packages(self, stdscr, height, width):
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, 0, "Package Analysis", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
+    def _draw_analysis(self, stdscr, height, width):
+        """Draw package analysis view."""
+        start_y = 4
+        
+        try:
+            stdscr.addstr(start_y, 2, "Package Analysis", curses.A_BOLD)
+            stdscr.addstr(start_y + 1, 2, "─" * min(width - 4, 76))
+        except curses.error:
+            pass
+        
+        y = start_y + 3
+        
+        try:
+            stdscr.addstr(y, 2, "Analyzing packages across environments...", curses.color_pair(5))
+        except curses.error:
+            pass
+        stdscr.refresh()
         
         analyzer = PackageAnalyzer(self.venvs)
         duplicates = analyzer.get_duplicates()
         conflicts = analyzer.get_version_conflicts()
         
-        y = start_y + 3
-        stdscr.addstr(y, 2, f"Total unique packages: {len(analyzer.package_map)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Duplicated across venvs: {len(duplicates)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Version conflicts: {len(conflicts)}")
         y += 2
         
-        stdscr.addstr(y, 2, "Top duplicates:", curses.A_BOLD)
+        summary = [
+            f"Total unique packages: {len(analyzer.package_map)}",
+            f"Duplicated across venvs: {len(duplicates)}",
+            f"Version conflicts: {len(conflicts)}",
+        ]
+        
+        for line in summary:
+            try:
+                stdscr.addstr(y, 2, line, curses.color_pair(3))
+            except curses.error:
+                pass
+            y += 1
+        
+        y += 2
+        try:
+            stdscr.addstr(y, 2, "Top Duplicates:", curses.A_BOLD)
+        except curses.error:
+            pass
         y += 1
         
         sorted_dups = sorted(duplicates.items(), key=lambda x: len(x[1]), reverse=True)[:15]
+        
         for name, installs in sorted_dups:
-            if y >= height - 2:
+            if y >= height - 4:
                 break
             versions = set(v for v, _ in installs)
-            line = f"  {name}: {len(installs)} copies, versions: {', '.join(sorted(versions)[:3])}"
+            line = f"  {name}: {len(installs)} copies ({', '.join(list(versions)[:3])})"
             try:
                 stdscr.addstr(y, 2, line[:width-4])
             except curses.error:
                 pass
             y += 1
         
-        stdscr.addstr(height - 1, 0, "Press ESC to go back")
+        # Footer
+        self._draw_footer(stdscr, height, width)
     
-    def _start_search(self, stdscr):
-        """Start search mode."""
-        height, width = stdscr.getmaxyx()
-        curses.echo()
-        curses.curs_set(1)
-        stdscr.addstr(height - 1, 0, "Search: ")
-        stdscr.refresh()
+    def _draw_footer(self, stdscr, height, width):
+        """Draw mode-specific footer."""
+        footer_y = height - 2
+        
+        if self.mode == 'list':
+            text = "Enter: details | ↑/↓: navigate | ESC/q: back"
+        elif self.mode == 'delete':
+            marked_count = len(self.selected_items)
+            marked_size = 0
+            if self.current_view == 'venvs':
+                marked_size = sum(self.venvs[i].size_bytes for i in self.selected_items if i < len(self.venvs))
+            text = f"Space: mark | d: delete {marked_count} items ({format_bytes(marked_size)}) | ESC: back"
+        elif self.mode == 'package':
+            marked_count = len(self.selected_items)
+            text = f"Space: mark | u: uninstall {marked_count} pkgs | Enter: view | ESC: back"
+        elif self.mode == 'explore':
+            text = "Enter: details | ↑/↓: navigate | h: help | ESC: back"
+        else:
+            text = "↑/↓: navigate | Enter: select | ESC/q: back"
+        
         try:
-            query = stdscr.getstr(height - 1, 8, 30).decode('utf-8')
-            self.search_query = query
-            # Filter venvs based on search
-            # Implementation depends on current view
-        except:
+            stdscr.addstr(footer_y, 2, text[:width-4], curses.color_pair(5))
+        except curses.error:
             pass
-        finally:
-            curses.noecho()
-            curses.curs_set(0)
     
     def _handle_enter(self):
-        """Handle Enter key."""
-        if self.current_view == 'main':
+        """Handle Enter key press."""
+        if self.current_view == 'mode_select':
+            # Select mode
+            modes = ['list', 'delete', 'explore', 'package', 'quit']
+            if self.cursor < len(modes):
+                selected = modes[self.cursor]
+                if selected == 'quit':
+                    sys.exit(0)
+                self.mode = selected
+                self.current_view = 'category_select'
+                self.breadcrumb = []
+                self.cursor = 0
+                self.scroll_offset = 0
+                self.selected_items.clear()
+        
+        elif self.current_view == 'category_select':
+            # Select category
             if self.cursor == 0:
                 self.current_view = 'interpreters'
-                self.breadcrumb = ['Interpreters']
+                self.breadcrumb.append('Interpreters')
                 self.cursor = 0
                 self.scroll_offset = 0
             elif self.cursor == 1:
                 self.current_view = 'venvs'
-                self.breadcrumb = ['Virtual Environments']
+                self.breadcrumb.append('Virtual Environments')
                 self.cursor = 0
                 self.scroll_offset = 0
-            elif self.cursor == 2:
-                self.current_view = 'packages'
-                self.breadcrumb = ['Package Analysis']
-            elif self.cursor == 3:
-                # Search
-                pass
-            elif self.cursor == 4:
-                sys.exit(0)
-        elif self.current_view == 'venvs':
-            # Drill down into venv details
+            elif self.cursor == 2 and self.mode == 'explore':
+                self.current_view = 'analysis'
+                self.breadcrumb.append('Analysis')
+                self.cursor = 0
+                self.scroll_offset = 0
+        
+        elif self.current_view == 'venvs' and self.mode in ['list', 'explore', 'package']:
+            # Drill down into venv
             if self.cursor < len(self.venvs):
                 self.selected_venv = self.venvs[self.cursor]
                 self.current_view = 'venv_detail'
@@ -858,27 +1073,81 @@ class BroomstickTUI:
             else:
                 self.selected_items.add(self.cursor)
     
-    def _mark_for_deletion(self):
-        """Delete marked items."""
-        if self.current_view == 'venv_detail' and self.selected_venv:
+    def _confirm_delete(self, stdscr):
+        """Confirm and execute deletion."""
+        if not self.selected_items:
+            return
+        
+        height, width = stdscr.getmaxyx()
+        
+        # Calculate total size
+        total_size = 0
+        if self.current_view == 'venvs':
+            total_size = sum(self.venvs[i].size_bytes for i in self.selected_items if i < len(self.venvs))
+        
+        # Confirmation dialog
+        msg = f"Delete {len(self.selected_items)} items ({format_bytes(total_size)})? [y/N]: "
+        try:
+            stdscr.addstr(height - 1, 2, msg, curses.color_pair(2) | curses.A_BOLD)
+        except curses.error:
+            pass
+        stdscr.refresh()
+        
+        curses.echo()
+        try:
+            response = stdscr.getstr(height - 1, len(msg) + 2, 3).decode('utf-8')
+        except:
+            response = "n"
+        finally:
+            curses.noecho()
+        
+        if response.lower() in ['y', 'yes']:
+            # Delete marked items
+            for idx in sorted(self.selected_items, reverse=True):
+                if self.current_view == 'venvs' and idx < len(self.venvs):
+                    venv = self.venvs[idx]
+                    if not is_system_path(venv.path):
+                        try:
+                            shutil.rmtree(venv.path)
+                            self.venvs.pop(idx)
+                        except Exception:
+                            pass
+            
+            self.selected_items.clear()
+            self.cursor = min(self.cursor, max(0, len(self.venvs) - 1))
+    
+    def _confirm_uninstall(self, stdscr):
+        """Confirm and execute package uninstall."""
+        if not self.selected_items or not self.selected_venv:
+            return
+        
+        height, width = stdscr.getmaxyx()
+        
+        msg = f"Uninstall {len(self.selected_items)} packages? [y/N]: "
+        try:
+            stdscr.addstr(height - 1, 2, msg, curses.color_pair(2) | curses.A_BOLD)
+        except curses.error:
+            pass
+        stdscr.refresh()
+        
+        curses.echo()
+        try:
+            response = stdscr.getstr(height - 1, len(msg) + 2, 3).decode('utf-8')
+        except:
+            response = "n"
+        finally:
+            curses.noecho()
+        
+        if response.lower() in ['y', 'yes']:
             # Uninstall marked packages
             for idx in sorted(self.selected_items):
                 if idx < len(self.selected_venv.packages):
                     pkg = self.selected_venv.packages[idx]
                     self.selected_venv.uninstall_package(pkg.name)
+            
             self.selected_items.clear()
             self.selected_venv.probe_packages(force=True)
-        elif self.current_view == 'venvs':
-            # Delete marked venvs
-            for idx in sorted(self.selected_items, reverse=True):
-                if idx < len(self.venvs):
-                    venv = self.venvs[idx]
-                    try:
-                        shutil.rmtree(venv.path)
-                        self.venvs.pop(idx)
-                    except Exception:
-                        pass
-            self.selected_items.clear()
+            self.cursor = min(self.cursor, max(0, len(self.selected_venv.packages) - 1))
     
     def _go_back(self):
         """Go back to previous view."""
@@ -890,13 +1159,22 @@ class BroomstickTUI:
             self.selected_items.clear()
             if self.breadcrumb:
                 self.breadcrumb.pop()
-        elif self.current_view in ['interpreters', 'venvs', 'packages']:
-            self.current_view = 'main'
+        elif self.current_view in ['interpreters', 'venvs', 'analysis']:
+            self.current_view = 'category_select'
+            self.cursor = 0
+            self.scroll_offset = 0
+            self.selected_items.clear()
+            self.breadcrumb.clear()
+        elif self.current_view == 'category_select':
+            self.current_view = 'mode_select'
+            self.mode = None
             self.cursor = 0
             self.scroll_offset = 0
             self.breadcrumb.clear()
         else:
-            self.current_view = 'main'
+            self.current_view = 'mode_select'
+            self.mode = None
+            self.cursor = 0
             self.breadcrumb.clear()
 
 # ============================================================================
@@ -970,7 +1248,6 @@ def cmd_venvs(args):
 def cmd_packages(args):
     """List or analyze packages."""
     if args.venv:
-        # List packages in specific venv
         venv_path = os.path.abspath(args.venv)
         if not is_venv(venv_path):
             print(f"Error: {venv_path} is not a virtual environment")
@@ -988,7 +1265,6 @@ def cmd_packages(args):
         
         print(f"\nTotal: {len(venv.packages)} packages")
     else:
-        # Analyze packages across all venvs
         print("Scanning virtual environments...")
         venvs = find_venvs(use_mdfind=args.mdfind)
         
@@ -1084,7 +1360,6 @@ def cmd_search(args):
     """Search for venvs or packages."""
     print(f"Searching for '{args.pattern}'...")
     
-    # Search venvs
     venvs = find_venvs(use_mdfind=args.mdfind)
     matching_venvs = [v for v in venvs if args.pattern.lower() in v.project_name.lower() or args.pattern.lower() in v.path.lower()]
     
@@ -1094,7 +1369,6 @@ def cmd_search(args):
             print(f"  [{venv.manager}] {venv.project_name} ({format_bytes(venv.size_bytes)})")
             print(f"    {venv.path}")
     
-    # Search packages
     analyzer = PackageAnalyzer(venvs)
     matching_pkgs = analyzer.find_package(args.pattern)
     
@@ -1130,41 +1404,33 @@ def build_parser() -> argparse.ArgumentParser:
     
     subparsers = parser.add_subparsers(dest='command')
     
-    # scan
     scan_parser = subparsers.add_parser('scan', help='Scan for all Python resources')
     scan_parser.add_argument('--json', help='Save results to JSON file')
     scan_parser.add_argument('--path', help='Scan specific path')
     scan_parser.add_argument('--no-packages', action='store_true', help='Skip package probing')
     scan_parser.add_argument('--parallel', type=int, default=4, help='Parallel workers')
     
-    # interpreters
     interp_parser = subparsers.add_parser('interpreters', help='List all Python interpreters')
     
-    # venvs
     venv_parser = subparsers.add_parser('venvs', help='List all virtual environments')
     venv_parser.add_argument('--path', help='Scan specific path for venvs')
     
-    # packages
     pkg_parser = subparsers.add_parser('packages', help='List or analyze packages')
     pkg_parser.add_argument('--venv', help='List packages in specific venv')
     
-    # uninstall
     uninst_parser = subparsers.add_parser('uninstall', help='Uninstall package from venv')
     uninst_parser.add_argument('package', help='Package name to uninstall')
     uninst_parser.add_argument('--from', dest='from_venv', required=True, help='Venv path')
     uninst_parser.add_argument('--dry-run', action='store_true', help='Show what would be done')
     
-    # clean
     clean_parser = subparsers.add_parser('clean', help='Delete environments or interpreters')
     clean_parser.add_argument('--target', help='Path to delete')
     clean_parser.add_argument('--dry-run', action='store_true', help='Show what would be deleted')
     clean_parser.add_argument('--yes', action='store_true', help='Skip confirmation')
     
-    # search
     search_parser = subparsers.add_parser('search', help='Search for venvs or packages')
     search_parser.add_argument('pattern', help='Search pattern')
     
-    # interactive (default)
     interactive_parser = subparsers.add_parser('interactive', help='Launch interactive TUI')
     interactive_parser.add_argument('--path', help='Scan specific path for venvs')
     
