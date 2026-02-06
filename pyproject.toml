@@ -4,19 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "broomstick"
-version = "0.1.0"
-description = "Clean up Python environments, interpreters, and packages"
+version = "2.0.0"
+description = "Mole-inspired cleanup tool for Python: discover, analyze, and clean up Python environments, interpreters, and packages"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
-    {name = "Broomstick Contributors"}
+    {name = "Hayden", email = "hayden@example.com"}
 ]
-keywords = ["python", "venv", "cleanup", "environment", "package-manager"]
+keywords = ["python", "venv", "cleanup", "environment", "package-manager", "tui", "virtualenv", "pip", "conda"]
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console :: Curses",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Unix",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -25,11 +28,13 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/broomstick"
-Repository = "https://github.com/yourusername/broomstick"
+Homepage = "https://github.com/haydenso/broomstick"
+Repository = "https://github.com/haydenso/broomstick"
+Issues = "https://github.com/haydenso/broomstick/issues"
 
 [project.scripts]
 broomstick = "broomstick:main"

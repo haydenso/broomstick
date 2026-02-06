@@ -1,0 +1,8 @@
+include README.md
+include LICENSE
+include INSTALL.md
+include EXAMPLES.md
+include WHATS_NEW_V2.md
+include PROJECT_SUMMARY.md
+include broomstick
+include broomstick.rb

@@ -530,6 +530,9 @@ class BroomstickTUI:
         self.selected_items: Set[int] = set()
         self.breadcrumb = []
         self.show_help = False
+        self.search_mode = False
+        self.search_query = ""
+        self.filtered_items = []
     
     def run(self, stdscr):
         """Main TUI loop."""
@@ -564,6 +567,10 @@ class BroomstickTUI:
                 elif self.current_view == 'analysis':
                     self._draw_analysis(stdscr, height, width)
             
+            # Draw help overlay if enabled
+            if self.show_help:
+                self._draw_help_overlay(stdscr, height, width)
+            
             stdscr.refresh()
             
             # Handle input
@@ -575,10 +582,10 @@ class BroomstickTUI:
                     break
             elif key == curses.KEY_UP:
                 self.cursor = max(0, self.cursor - 1)
-                self._adjust_scroll()
+                self._adjust_scroll_for_view(height)
             elif key == curses.KEY_DOWN:
                 self.cursor += 1
-                self._adjust_scroll()
+                self._adjust_scroll_for_view(height)
             elif key == ord('\n') or key == curses.KEY_ENTER or key == 10:
                 self._handle_enter()
             elif key == ord(' ') and self.mode in ['delete', 'package']:
@@ -588,14 +595,130 @@ class BroomstickTUI:
             elif key == ord('u') and self.mode == 'package':
                 self._confirm_uninstall(stdscr)
             elif key == 27:  # ESC
-                self._go_back()
+                if self.search_mode:
+                    self.search_mode = False
+                    self.search_query = ""
+                    self.filtered_items = []
+                else:
+                    self._go_back()
             elif key == ord('h') or key == ord('?'):
                 self.show_help = not self.show_help
+            elif key == ord('/') and self.current_view in ['interpreters', 'venvs', 'venv_detail']:
+                self._start_search(stdscr, height)
     
-    def _adjust_scroll(self):
+    
+    def _start_search(self, stdscr, height):
+        """Start search mode and filter items."""
+        width = stdscr.getmaxyx()[1]
+        prompt = "Search: "
+        
+        try:
+            stdscr.addstr(height - 1, 2, prompt, curses.color_pair(5) | curses.A_BOLD)
+        except curses.error:
+            pass
+        
+        stdscr.refresh()
+        curses.echo()
+        
+        try:
+            query = stdscr.getstr(height - 1, 2 + len(prompt), width - len(prompt) - 4).decode('utf-8')
+        except:
+            query = ""
+        finally:
+            curses.noecho()
+        
+        if query:
+            self.search_query = query.lower()
+            self.search_mode = True
+            self._apply_search_filter()
+            self.cursor = 0
+            self.scroll_offset = 0
+        else:
+            self.search_mode = False
+            self.search_query = ""
+            self.filtered_items = []
+    
+    def _apply_search_filter(self):
+        """Apply search filter to current view items."""
+        self.filtered_items = []
+        
+        if self.current_view == 'interpreters':
+            for i, interp in enumerate(self.interpreters):
+                if (self.search_query in interp.version.lower() if interp.version else False) or \
+                   (self.search_query in interp.manager.lower()) or \
+                   (self.search_query in interp.path.lower()):
+                    self.filtered_items.append(i)
+        
+        elif self.current_view == 'venvs':
+            for i, venv in enumerate(self.venvs):
+                if (self.search_query in venv.project_name.lower()) or \
+                   (self.search_query in venv.manager.lower()) or \
+                   (self.search_query in venv.path.lower()):
+                    self.filtered_items.append(i)
+        
+        elif self.current_view == 'venv_detail' and self.selected_venv:
+            for i, pkg in enumerate(self.selected_venv.packages):
+                if (self.search_query in pkg.name.lower()) or \
+                   (self.search_query in pkg.version.lower()):
+                    self.filtered_items.append(i)
+    
+    def _get_current_items(self):
+        """Get current list of items (filtered or unfiltered)."""
+        if self.search_mode and self.filtered_items:
+            if self.current_view == 'interpreters':
+                return [self.interpreters[i] for i in self.filtered_items]
+            elif self.current_view == 'venvs':
+                return [self.venvs[i] for i in self.filtered_items]
+            elif self.current_view == 'venv_detail' and self.selected_venv:
+                return [self.selected_venv.packages[i] for i in self.filtered_items]
+        else:
+            if self.current_view == 'interpreters':
+                return self.interpreters
+            elif self.current_view == 'venvs':
+                return self.venvs
+            elif self.current_view == 'venv_detail' and self.selected_venv:
+                return self.selected_venv.packages
+        return []
+    
+    
+    
+    def _adjust_scroll_for_view(self, screen_height):
+        """Adjust scroll based on current view."""
+        visible_height = screen_height - 10  # Account for headers and footers
+        
+        if self.current_view == 'mode_select':
+            max_items = 5  # 4 modes + quit
+        elif self.current_view == 'category_select':
+            max_items = 3 if self.mode == 'explore' else 2
+        elif self.current_view == 'interpreters':
+            max_items = len(self.interpreters)
+        elif self.current_view == 'venvs':
+            max_items = len(self.venvs)
+        elif self.current_view == 'venv_detail':
+            max_items = len(self.selected_venv.packages) if self.selected_venv else 0
+        else:
+            max_items = 0
+        
+        self._adjust_scroll(max_items, visible_height)
+    
+    def _adjust_scroll(self, max_items=None, visible_height=None):
         """Adjust scroll offset to keep cursor visible."""
-        # This will be refined per view
-        pass
+        if visible_height is None or max_items is None:
+            return
+        
+        # Ensure cursor is within bounds
+        if max_items > 0:
+            self.cursor = max(0, min(self.cursor, max_items - 1))
+        
+        # Adjust scroll to keep cursor visible
+        if self.cursor < self.scroll_offset:
+            self.scroll_offset = self.cursor
+        elif self.cursor >= self.scroll_offset + visible_height:
+            self.scroll_offset = self.cursor - visible_height + 1
+        
+        # Ensure scroll offset is within bounds
+        max_scroll = max(0, max_items - visible_height)
+        self.scroll_offset = max(0, min(self.scroll_offset, max_scroll))
     
     def _draw_mode_select(self, stdscr, height, width):
         """Draw the initial mode selection screen (Mole-style)."""
@@ -767,8 +890,12 @@ class BroomstickTUI:
         """Draw Python interpreters list."""
         start_y = 4
         
+        header = "Python Interpreters"
+        if self.search_mode:
+            header += f" (searching: '{self.search_query}')"
+        
         try:
-            stdscr.addstr(start_y, 2, "Python Interpreters", curses.A_BOLD)
+            stdscr.addstr(start_y, 2, header, curses.A_BOLD)
             stdscr.addstr(start_y + 1, 2, "─" * min(width - 4, 76))
         except curses.error:
             pass
@@ -776,7 +903,8 @@ class BroomstickTUI:
         list_y = start_y + 3
         list_height = height - list_y - 4
         
-        visible_items = self.interpreters[self.scroll_offset:self.scroll_offset + list_height]
+        items = self._get_current_items()
+        visible_items = items[self.scroll_offset:self.scroll_offset + list_height]
         
         for i, interp in enumerate(visible_items):
             y = list_y + i
@@ -785,7 +913,10 @@ class BroomstickTUI:
             
             idx = self.scroll_offset + i
             is_selected = idx == self.cursor
-            is_marked = idx in self.selected_items
+            
+            # For marked items, need to map back to original index
+            original_idx = self.filtered_items[idx] if self.search_mode and idx < len(self.filtered_items) else idx
+            is_marked = original_idx in self.selected_items
             
             # Build line
             prefix = "[X] " if is_marked and self.mode == 'delete' else "[ ] " if self.mode == 'delete' else "  "
@@ -815,8 +946,12 @@ class BroomstickTUI:
         """Draw virtual environments list."""
         start_y = 4
         
+        header = "Virtual Environments"
+        if self.search_mode:
+            header += f" (searching: '{self.search_query}')"
+        
         try:
-            stdscr.addstr(start_y, 2, "Virtual Environments", curses.A_BOLD)
+            stdscr.addstr(start_y, 2, header, curses.A_BOLD)
             stdscr.addstr(start_y + 1, 2, "─" * min(width - 4, 76))
         except curses.error:
             pass
@@ -824,7 +959,8 @@ class BroomstickTUI:
         list_y = start_y + 3
         list_height = height - list_y - 4
         
-        visible_items = self.venvs[self.scroll_offset:self.scroll_offset + list_height]
+        items = self._get_current_items()
+        visible_items = items[self.scroll_offset:self.scroll_offset + list_height]
         
         for i, venv in enumerate(visible_items):
             y = list_y + i
@@ -833,7 +969,10 @@ class BroomstickTUI:
             
             idx = self.scroll_offset + i
             is_selected = idx == self.cursor
-            is_marked = idx in self.selected_items
+            
+            # For marked items, need to map back to original index
+            original_idx = self.filtered_items[idx] if self.search_mode and idx < len(self.filtered_items) else idx
+            is_marked = original_idx in self.selected_items
             
             # Build line
             prefix = "[X] " if is_marked and self.mode in ['delete', 'package'] else "[ ] " if self.mode in ['delete', 'package'] else "  "
@@ -1001,18 +1140,18 @@ class BroomstickTUI:
         footer_y = height - 2
         
         if self.mode == 'list':
-            text = "Enter: details | ↑/↓: navigate | ESC/q: back"
+            text = "Enter: details | /: search | h: help | ESC/q: back"
         elif self.mode == 'delete':
             marked_count = len(self.selected_items)
             marked_size = 0
             if self.current_view == 'venvs':
                 marked_size = sum(self.venvs[i].size_bytes for i in self.selected_items if i < len(self.venvs))
-            text = f"Space: mark | d: delete {marked_count} items ({format_bytes(marked_size)}) | ESC: back"
+            text = f"Space: mark | d: delete {marked_count} items ({format_bytes(marked_size)}) | /: search | ESC: back"
         elif self.mode == 'package':
             marked_count = len(self.selected_items)
-            text = f"Space: mark | u: uninstall {marked_count} pkgs | Enter: view | ESC: back"
+            text = f"Space: mark | u: uninstall {marked_count} pkgs | /: search | ESC: back"
         elif self.mode == 'explore':
-            text = "Enter: details | ↑/↓: navigate | h: help | ESC: back"
+            text = "Enter: details | /: search | h: help | ESC: back"
         else:
             text = "↑/↓: navigate | Enter: select | ESC/q: back"
         
@@ -1020,6 +1159,60 @@ class BroomstickTUI:
             stdscr.addstr(footer_y, 2, text[:width-4], curses.color_pair(5))
         except curses.error:
             pass
+    
+    def _draw_help_overlay(self, stdscr, height, width):
+        """Draw help overlay in the center of screen."""
+        help_lines = [
+            "╔════════════════════════════════════════════════════════════╗",
+            "║                        HELP                                 ║",
+            "╠════════════════════════════════════════════════════════════╣",
+            "║  Navigation:                                                ║",
+            "║    ↑/↓        - Move cursor up/down                         ║",
+            "║    Enter      - Select item / view details                  ║",
+            "║    ESC / q    - Go back / quit                              ║",
+            "║                                                              ║",
+            "║  Modes:                                                      ║",
+            "║    List       - Browse environments (read-only)              ║",
+            "║    Delete     - Remove environments and packages             ║",
+            "║    Analyze    - View duplicates and conflicts                ║",
+            "║    Package    - Manage packages within venvs                 ║",
+            "║                                                              ║",
+            "║  Delete Mode:                                                ║",
+            "║    Space      - Mark/unmark items                            ║",
+            "║    d          - Delete marked items                          ║",
+            "║                                                              ║",
+            "║  Package Mode:                                               ║",
+            "║    Space      - Mark/unmark packages                         ║",
+            "║    u          - Uninstall marked packages                    ║",
+            "║                                                              ║",
+            "║  Press 'h' or '?' to close this help                         ║",
+            "╚════════════════════════════════════════════════════════════╝",
+        ]
+        
+        box_height = len(help_lines)
+        box_width = len(help_lines[0])
+        
+        # Center the box
+        start_y = max(0, (height - box_height) // 2)
+        start_x = max(0, (width - box_width) // 2)
+        
+        # Draw semi-transparent background
+        for y in range(start_y, min(start_y + box_height, height)):
+            for x in range(start_x, min(start_x + box_width, width)):
+                try:
+                    stdscr.addch(y, x, ' ', curses.color_pair(1))
+                except curses.error:
+                    pass
+        
+        # Draw help text
+        for i, line in enumerate(help_lines):
+            y = start_y + i
+            if y >= height:
+                break
+            try:
+                stdscr.addstr(y, start_x, line[:width - start_x], curses.color_pair(4) | curses.A_BOLD)
+            except curses.error:
+                pass
     
     def _handle_enter(self):
         """Handle Enter key press."""
@@ -1102,16 +1295,43 @@ class BroomstickTUI:
             curses.noecho()
         
         if response.lower() in ['y', 'yes']:
-            # Delete marked items
+            # Delete marked items with progress
+            total = len(self.selected_items)
+            deleted = 0
+            
             for idx in sorted(self.selected_items, reverse=True):
                 if self.current_view == 'venvs' and idx < len(self.venvs):
                     venv = self.venvs[idx]
                     if not is_system_path(venv.path):
+                        # Show progress
+                        progress_msg = f"Deleting {deleted + 1}/{total}: {venv.project_name[:40]}..."
+                        try:
+                            stdscr.addstr(height - 1, 2, " " * (width - 4))
+                            stdscr.addstr(height - 1, 2, progress_msg[:width-4], curses.color_pair(5))
+                        except curses.error:
+                            pass
+                        stdscr.refresh()
+                        
                         try:
                             shutil.rmtree(venv.path)
                             self.venvs.pop(idx)
-                        except Exception:
-                            pass
+                            deleted += 1
+                        except Exception as e:
+                            # Show error briefly
+                            try:
+                                stdscr.addstr(height - 1, 2, f"Error deleting: {str(e)[:width-20]}", curses.color_pair(2))
+                            except curses.error:
+                                pass
+                            stdscr.refresh()
+                            time.sleep(1)
+            
+            # Show completion message
+            try:
+                stdscr.addstr(height - 1, 2, f"Deleted {deleted}/{total} items. Press any key...", curses.color_pair(3))
+            except curses.error:
+                pass
+            stdscr.refresh()
+            stdscr.getch()
             
             self.selected_items.clear()
             self.cursor = min(self.cursor, max(0, len(self.venvs) - 1))
@@ -1139,11 +1359,42 @@ class BroomstickTUI:
             curses.noecho()
         
         if response.lower() in ['y', 'yes']:
-            # Uninstall marked packages
+            # Uninstall marked packages with progress
+            total = len(self.selected_items)
+            uninstalled = 0
+            
             for idx in sorted(self.selected_items):
                 if idx < len(self.selected_venv.packages):
                     pkg = self.selected_venv.packages[idx]
-                    self.selected_venv.uninstall_package(pkg.name)
+                    
+                    # Show progress
+                    progress_msg = f"Uninstalling {uninstalled + 1}/{total}: {pkg.name}..."
+                    try:
+                        stdscr.addstr(height - 1, 2, " " * (width - 4))
+                        stdscr.addstr(height - 1, 2, progress_msg[:width-4], curses.color_pair(5))
+                    except curses.error:
+                        pass
+                    stdscr.refresh()
+                    
+                    try:
+                        self.selected_venv.uninstall_package(pkg.name)
+                        uninstalled += 1
+                    except Exception as e:
+                        # Show error briefly
+                        try:
+                            stdscr.addstr(height - 1, 2, f"Error: {str(e)[:width-20]}", curses.color_pair(2))
+                        except curses.error:
+                            pass
+                        stdscr.refresh()
+                        time.sleep(1)
+            
+            # Show completion message
+            try:
+                stdscr.addstr(height - 1, 2, f"Uninstalled {uninstalled}/{total} packages. Press any key...", curses.color_pair(3))
+            except curses.error:
+                pass
+            stdscr.refresh()
+            stdscr.getch()
             
             self.selected_items.clear()
             self.selected_venv.probe_packages(force=True)

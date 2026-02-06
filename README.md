@@ -2,14 +2,27 @@
 
 A comprehensive, Mole-inspired cleanup tool for Python environments. Discover, analyze, and clean up Python installations, virtual environments, and individual packages across your system with an interactive TUI or powerful CLI.
 
-## ✨ New Features
+## ✨ New in Version 2.0
 
+### Mole-Inspired Mode System
+- **List Mode**: Browse and explore environments (read-only)
+- **Delete Mode**: Remove unwanted environments and packages
+- **Analyze Mode**: Deep analysis of packages and duplicates
+- **Package Manager**: Manage packages within environments
+
+### Enhanced TUI Features
+- **Mode Selection Screen**: Beautiful startup screen with mode chooser
+- **Smart Scrolling**: Automatic scroll management for long lists
+- **Help Overlay**: Press 'h' or '?' for contextual help
+- **Search Function**: Press '/' to filter items in real-time
+- **Progress Indicators**: See deletion/uninstall progress
+- **Breadcrumb Navigation**: Always know where you are
+
+### Core Improvements
 - **Package-Level Deletion**: Drill down into venvs and uninstall specific packages
 - **Modern Tool Support**: Full support for uv, ruff, piptools, and all latest Python tools
-- **Enhanced Path Navigation**: Breadcrumb trails and project-relative paths
-- **Recursive .venv Detection**: Finds project venvs deep in your directory tree
-- **Search Functionality**: Quickly find venvs and packages by name
-- **Uninstall Command**: Remove packages from specific venvs via CLI
+- **Enhanced Path Navigation**: Project-relative paths and shortened display
+- **Recursive .venv Detection**: Finds project venvs deep in your directory tree (configurable depth)
 
 ## Features
 
@@ -45,33 +58,75 @@ A comprehensive, Mole-inspired cleanup tool for Python environments. Discover, a
 
 ## Installation
 
+### Homebrew (macOS/Linux - Recommended)
+```bash
+# Install directly from formula
+brew install https://raw.githubusercontent.com/haydenso/broomstick/main/broomstick.rb
+
+# Or add the tap (after tap is created)
+brew tap haydenso/broomstick
+brew install broomstick
+```
+
+### pip (All Platforms)
+```bash
+# From PyPI (when published)
+pip install broomstick
+
+# From GitHub
+pip install git+https://github.com/haydenso/broomstick.git
+
+# Development mode
+git clone https://github.com/haydenso/broomstick.git
+cd broomstick
+pip install -e .
+```
+
+### Direct Download
 ```bash
 # Clone and run
-git clone <repo-url>
+git clone https://github.com/haydenso/broomstick.git
 cd broomstick
 chmod +x broomstick
 ./broomstick
-
-# Or install with pip
-pip install -e .
-broomstick
 ```
+
+See [INSTALL.md](INSTALL.md) for detailed installation instructions and [HOMEBREW.md](HOMEBREW.md) for Homebrew tap setup.
 
 ## Quick Start
 
-### Interactive Mode (Recommended)
+### Interactive Mode with Modes (Recommended)
 
 ```bash
 ./broomstick
 ```
 
-Navigate the TUI:
+**Mode Selection:**
+When you launch Broomstick, you'll see a beautiful mode selection screen:
+
+1. **List Mode** - Browse and explore environments (read-only, safe for exploration)
+2. **Delete Mode** - Remove unwanted environments and packages (with confirmations)
+3. **Analyze Mode** - Deep analysis of packages, duplicates, and conflicts
+4. **Package Manager** - Manage packages within specific environments
+
+**Navigation:**
 - `↑/↓` - Move cursor
-- `Enter` - Drill down into item
-- `Space` - Mark/unmark for deletion
-- `d` - Delete marked items
-- `ESC` or `q` - Go back/quit
-- `/` - Search
+- `Enter` - Select mode / drill down into item
+- `Space` - Mark/unmark for deletion (in Delete/Package modes)
+- `d` - Delete marked items (in Delete mode)
+- `u` - Uninstall marked packages (in Package Manager mode)
+- `h` or `?` - Show help overlay
+- `/` - Search/filter current list
+- `ESC` - Go back to previous screen
+- `q` - Quit (or go back from mode selection)
+
+**Workflow Example:**
+1. Start Broomstick → See mode selection screen
+2. Choose "Delete Mode" → See category selection (Interpreters/Venvs)
+3. Choose "Virtual Environments" → See list of all venvs
+4. Press Space to mark old venvs → Press 'd' to delete
+5. Confirm deletion → See progress indicators
+6. Press ESC to go back → Choose different mode or quit
 
 ### Command Line Interface
 

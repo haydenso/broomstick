@@ -2,10 +2,39 @@
 
 ## Quick Install (Recommended)
 
-### Option 1: Direct Download
+### Option 1: Homebrew (macOS/Linux - Easiest)
 ```bash
-# Clone or download the repository
-git clone https://github.com/yourusername/broomstick.git
+# Add the tap
+brew tap haydenso/broomstick
+
+# Install broomstick
+brew install broomstick
+
+# Run from anywhere
+broomstick
+```
+
+Or install directly from the formula:
+```bash
+brew install https://raw.githubusercontent.com/haydenso/broomstick/main/broomstick.rb
+```
+
+### Option 2: Install from PyPI (when published)
+```bash
+pip install broomstick
+broomstick
+```
+
+### Option 3: Install with pip from GitHub
+```bash
+pip install git+https://github.com/haydenso/broomstick.git
+broomstick
+```
+
+### Option 4: Direct Download
+```bash
+# Clone the repository
+git clone https://github.com/haydenso/broomstick.git
 cd broomstick
 
 # Make executable and run
@@ -13,19 +42,13 @@ chmod +x broomstick
 ./broomstick
 ```
 
-### Option 2: Install with pip (editable)
+### Option 5: Install with pip (editable development mode)
 ```bash
-git clone https://github.com/yourusername/broomstick.git
+git clone https://github.com/haydenso/broomstick.git
 cd broomstick
 pip install -e .
 
 # Now you can run from anywhere
-broomstick
-```
-
-### Option 3: Install from PyPI (when published)
-```bash
-pip install broomstick
 broomstick
 ```
 
@@ -64,6 +87,11 @@ broomstick venvs
 
 ## Uninstall
 
+### If installed with Homebrew:
+```bash
+brew uninstall broomstick
+```
+
 ### If installed with pip:
 ```bash
 pip uninstall broomstick
@@ -101,7 +129,7 @@ broomstick packages
 ## Development Setup
 
 ```bash
-git clone https://github.com/yourusername/broomstick.git
+git clone https://github.com/haydenso/broomstick.git
 cd broomstick
 
 # Install in editable mode
