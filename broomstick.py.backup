@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
 """
-broomstick - Comprehensive Python environment and package cleaner
+broomstick - Clean up Python environments, interpreters, and packages
 
 A Mole-inspired cleanup tool for Python: discover all Python installations,
-virtual environments, and packages; drill down to package level; analyze
-duplicates and outdated versions; and interactively or programmatically
-remove what you don't need.
+virtual environments, and packages; analyze duplicates and outdated versions;
+and interactively or programmatically remove what you don't need.
 
 Usage:
-  broomstick                                    # Interactive TUI mode
-  broomstick scan [--json FILE]                 # Scan and save results
-  broomstick interpreters                       # List all Python interpreters
-  broomstick venvs [--path PATH]                # List virtual environments
-  broomstick packages [--venv PATH]             # List/analyze packages
-  broomstick uninstall PKG --from VENV          # Uninstall package from venv
-  broomstick clean [--target PATH]              # Delete environments/interpreters
-  broomstick search PATTERN                     # Search for venvs or packages
+  broomstick                              # Interactive TUI mode
+  broomstick scan [--json FILE]           # Scan and save results
+  broomstick interpreters                 # List all Python interpreters
+  broomstick venvs                        # List all virtual environments
+  broomstick packages                     # Analyze packages (duplicates, outdated)
+  broomstick clean [--target PATH]        # Delete environments/interpreters
 """
 from __future__ import annotations
 
@@ -32,7 +29,6 @@ import sys
 import time
 from collections import defaultdict
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 # ============================================================================
@@ -40,31 +36,64 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 # ============================================================================
 
 MANAGER_PATHS = {
-    "pyenv": ["~/.pyenv/versions"],
-    "asdf": ["~/.asdf/installs/python"],
-    "pipx": ["~/.local/pipx/venvs"],
-    "poetry": ["~/.cache/pypoetry/virtualenvs", "~/.local/share/pypoetry/virtualenvs"],
-    "conda": ["~/miniconda3/envs", "~/anaconda3/envs", "~/miniforge3/envs", 
-              "/opt/miniconda3/envs", "/opt/anaconda3/envs"],
-    "pipenv": ["~/.local/share/virtualenvs"],
-    "hatch": ["~/.local/share/hatch/env/virtual"],
-    "pdm": ["~/.local/share/pdm/venvs"],
-    "uv": ["~/.local/share/uv/venvs", "~/.cache/uv/venvs"],
+    "pyenv": [
+        "~/.pyenv/versions",
+    ],
+    "asdf": [
+        "~/.asdf/installs/python",
+    ],
+    "pipx": [
+        "~/.local/pipx/venvs",
+    ],
+    "poetry": [
+        "~/.cache/pypoetry/virtualenvs",
+        "~/.local/share/pypoetry/virtualenvs",
+    ],
+    "conda": [
+        "~/miniconda3/envs",
+        "~/anaconda3/envs",
+        "~/miniforge3/envs",
+        "/opt/miniconda3/envs",
+        "/opt/anaconda3/envs",
+    ],
+    "pipenv": [
+        "~/.local/share/virtualenvs",
+    ],
+    "hatch": [
+        "~/.local/share/hatch/env/virtual",
+    ],
+    "pdm": [
+        "~/.local/share/pdm/venvs",
+    ],
 }
 
 # System Python paths to avoid deleting
 SYSTEM_PYTHON_PATHS = [
-    "/usr/bin/python", "/usr/bin/python2", "/usr/bin/python3",
+    "/usr/bin/python",
+    "/usr/bin/python2",
+    "/usr/bin/python3",
     "/System/Library/Frameworks/Python.framework",
     "/Library/Frameworks/Python.framework",
-    "C:\\Windows\\System32", "C:\\Python",
+    "C:\\Windows\\System32",
+    "C:\\Python",
 ]
 
-# Project venv names to look for
-PROJECT_VENV_NAMES = [".venv", "venv", "env", ".env", "virtualenv"]
+# Homebrew and other package manager paths
+PACKAGE_MANAGER_PATHS = [
+    "/opt/homebrew/bin/python",
+    "/opt/homebrew/Cellar/python",
+    "/usr/local/bin/python",
+    "/usr/local/Cellar/python",
+]
 
-# Default scan paths
-DEFAULT_SCAN_PATHS = ["~"]
+# Default scan paths for general search
+DEFAULT_SCAN_PATHS = [
+    "~",
+    "/opt/homebrew",
+    "/usr/local",
+    "/opt",
+]
+
 
 # ============================================================================
 # Utilities
@@ -78,21 +107,14 @@ def format_bytes(b: int) -> str:
         b /= 1024.0
     return f"{b:.1f}PB"
 
+
 def format_datetime(ts: Optional[float]) -> str:
     """Format timestamp to human-readable string."""
     if ts is None:
         return "unknown"
     dt = datetime.fromtimestamp(ts)
-    now = datetime.now()
-    delta = now - dt
-    if delta.days > 365:
-        return f"{delta.days // 365}y ago"
-    elif delta.days > 30:
-        return f"{delta.days // 30}mo ago"
-    elif delta.days > 0:
-        return f"{delta.days}d ago"
-    else:
-        return "today"
+    return dt.strftime("%Y-%m-%d %H:%M")
+
 
 def get_dir_size(path: str) -> int:
     """Calculate total size of directory in bytes."""
@@ -110,6 +132,7 @@ def get_dir_size(path: str) -> int:
         pass
     return total
 
+
 def is_system_path(path: str) -> bool:
     """Check if path is a system-managed Python."""
     abs_path = os.path.abspath(path)
@@ -118,12 +141,15 @@ def is_system_path(path: str) -> bool:
             return True
     return False
 
+
 def run_python_command(python_exec: str, cmd: str, timeout: int = 10) -> Optional[str]:
     """Run a Python command and return output."""
     try:
         result = subprocess.run(
             [python_exec, "-c", cmd],
-            capture_output=True, text=True, timeout=timeout
+            capture_output=True,
+            text=True,
+            timeout=timeout
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -131,23 +157,6 @@ def run_python_command(python_exec: str, cmd: str, timeout: int = 10) -> Optiona
         pass
     return None
 
-def get_project_name(venv_path: str) -> str:
-    """Try to infer project name from venv path."""
-    path = Path(venv_path)
-    # If it's a .venv in a project folder, return project name
-    if path.name in PROJECT_VENV_NAMES:
-        return path.parent.name
-    # Otherwise return the venv dir name
-    return path.name
-
-def shorten_path(path: str, max_len: int = 50) -> str:
-    """Shorten path for display."""
-    if len(path) <= max_len:
-        return path
-    parts = path.split(os.sep)
-    if len(parts) <= 3:
-        return path
-    return f"...{os.sep}{os.sep.join(parts[-2:])}"
 
 # ============================================================================
 # Python Interpreter Detection
@@ -166,10 +175,12 @@ class PythonInterpreter:
     
     def _detect_info(self):
         """Detect version and manager."""
+        # Get version
         ver_output = run_python_command(self.path, "import sys; print(sys.version)")
         if ver_output:
             self.version = ver_output.split('\n')[0]
         
+        # Detect manager from path
         path_lower = self.path.lower()
         if '.pyenv' in path_lower:
             self.manager = 'pyenv'
@@ -179,13 +190,12 @@ class PythonInterpreter:
             self.manager = 'conda'
         elif 'homebrew' in path_lower or 'cellar' in path_lower:
             self.manager = 'homebrew'
-        elif 'uv' in path_lower:
-            self.manager = 'uv'
         elif self.is_system:
             self.manager = 'system'
         else:
             self.manager = 'unknown'
         
+        # Calculate size of parent directory if it looks like a version dir
         parent = os.path.dirname(self.path)
         if os.path.basename(parent) == 'bin':
             version_dir = os.path.dirname(parent)
@@ -201,19 +211,23 @@ class PythonInterpreter:
             'size_bytes': self.size_bytes,
         }
 
+
 def find_python_interpreters(use_mdfind: bool = False) -> List[PythonInterpreter]:
     """Find all Python interpreters on the system."""
     interpreters = []
     found_paths: Set[str] = set()
     
+    # 1. Check manager-specific paths
     for manager, paths in MANAGER_PATHS.items():
         for path_template in paths:
             path = os.path.expanduser(path_template)
             if not os.path.exists(path):
                 continue
+            
             try:
                 for entry in os.scandir(path):
                     if entry.is_dir(follow_symlinks=False):
+                        # Look for bin/python*
                         bin_dir = os.path.join(entry.path, 'bin')
                         if os.path.isdir(bin_dir):
                             for py_name in ['python', 'python3', 'python2']:
@@ -226,6 +240,7 @@ def find_python_interpreters(use_mdfind: bool = False) -> List[PythonInterpreter
             except PermissionError:
                 continue
     
+    # 2. Check PATH
     path_env = os.environ.get('PATH', '')
     for path_dir in path_env.split(os.pathsep):
         if path_dir and os.path.isdir(path_dir):
@@ -237,11 +252,14 @@ def find_python_interpreters(use_mdfind: bool = False) -> List[PythonInterpreter
                         found_paths.add(abs_path)
                         interpreters.append(PythonInterpreter(abs_path))
     
+    # 3. macOS-specific: use mdfind if available
     if use_mdfind and platform.system() == 'Darwin':
         try:
             result = subprocess.run(
                 ['mdfind', 'kMDItemFSName == python3'],
-                capture_output=True, text=True, timeout=30
+                capture_output=True,
+                text=True,
+                timeout=30
             )
             if result.returncode == 0:
                 for line in result.stdout.strip().split('\n'):
@@ -255,24 +273,6 @@ def find_python_interpreters(use_mdfind: bool = False) -> List[PythonInterpreter
     
     return interpreters
 
-# ============================================================================
-# Package Management
-# ============================================================================
-
-class Package:
-    """Represents an installed Python package."""
-    
-    def __init__(self, name: str, version: str, size_bytes: int = 0):
-        self.name = name
-        self.version = version
-        self.size_bytes = size_bytes
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'name': self.name,
-            'version': self.version,
-            'size_bytes': self.size_bytes,
-        }
 
 # ============================================================================
 # Virtual Environment Detection
@@ -284,29 +284,30 @@ class VirtualEnv:
     def __init__(self, path: str):
         self.path = os.path.abspath(path)
         self.name = os.path.basename(path)
-        self.project_name = get_project_name(path)
         self.python_version: Optional[str] = None
         self.manager: Optional[str] = None
         self.size_bytes = 0
         self.last_modified: Optional[float] = None
-        self.packages: List[Package] = []
+        self.packages: List[Dict[str, str]] = []
         self.python_executable: Optional[str] = None
-        self.packages_loaded = False
         self._detect_info()
     
     def _detect_info(self):
         """Detect venv details."""
+        # Find Python executable
         for candidate in ['bin/python', 'bin/python3', 'Scripts/python.exe']:
             py_path = os.path.join(self.path, candidate)
             if os.path.exists(py_path) and os.access(py_path, os.X_OK):
                 self.python_executable = py_path
                 break
         
+        # Get Python version
         if self.python_executable:
             ver = run_python_command(self.python_executable, "import sys; print(sys.version)")
             if ver:
                 self.python_version = ver.split('\n')[0]
         
+        # Detect manager from path
         path_lower = self.path.lower()
         if '.pyenv' in path_lower:
             self.manager = 'pyenv'
@@ -322,66 +323,44 @@ class VirtualEnv:
             self.manager = 'hatch'
         elif 'pdm' in path_lower:
             self.manager = 'pdm'
-        elif 'uv' in path_lower:
-            self.manager = 'uv'
         else:
             self.manager = 'venv'
         
+        # Size and last modified
         self.size_bytes = get_dir_size(self.path)
         try:
             self.last_modified = os.path.getmtime(self.path)
         except OSError:
             self.last_modified = None
     
-    def probe_packages(self, force: bool = False):
+    def probe_packages(self):
         """Probe installed packages in this venv."""
-        if self.packages_loaded and not force:
-            return
-        
         if not self.python_executable:
             return
         
         try:
             result = subprocess.run(
                 [self.python_executable, '-m', 'pip', 'list', '--format=json'],
-                capture_output=True, text=True, timeout=15
+                capture_output=True,
+                text=True,
+                timeout=15
             )
             if result.returncode == 0:
-                pkg_list = json.loads(result.stdout)
-                self.packages = [Package(p['name'], p['version']) for p in pkg_list]
-                self.packages_loaded = True
+                self.packages = json.loads(result.stdout)
         except (subprocess.SubprocessError, FileNotFoundError, json.JSONDecodeError):
             pass
-    
-    def uninstall_package(self, package_name: str, dry_run: bool = False) -> bool:
-        """Uninstall a specific package from this venv."""
-        if not self.python_executable:
-            return False
-        
-        if dry_run:
-            print(f"[DRY RUN] Would uninstall {package_name} from {self.path}")
-            return True
-        
-        try:
-            result = subprocess.run(
-                [self.python_executable, '-m', 'pip', 'uninstall', '-y', package_name],
-                capture_output=True, text=True, timeout=30
-            )
-            return result.returncode == 0
-        except (subprocess.SubprocessError, FileNotFoundError):
-            return False
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             'path': self.path,
             'name': self.name,
-            'project_name': self.project_name,
             'python_version': self.python_version,
             'manager': self.manager,
             'size_bytes': self.size_bytes,
             'last_modified': self.last_modified,
-            'package_count': len(self.packages) if self.packages_loaded else None,
+            'packages': len(self.packages),
         }
+
 
 def is_venv(path: str) -> bool:
     """Check if a path is a virtual environment."""
@@ -396,7 +375,8 @@ def is_venv(path: str) -> bool:
     
     return any(os.path.exists(os.path.join(path, m)) for m in markers)
 
-def find_venvs(scan_path: Optional[str] = None, use_mdfind: bool = False, max_depth: int = 3) -> List[VirtualEnv]:
+
+def find_venvs(use_mdfind: bool = False) -> List[VirtualEnv]:
     """Find all virtual environments."""
     venvs = []
     found_paths: Set[str] = set()
@@ -407,6 +387,7 @@ def find_venvs(scan_path: Optional[str] = None, use_mdfind: bool = False, max_de
             path = os.path.expanduser(path_template)
             if not os.path.exists(path):
                 continue
+            
             try:
                 for entry in os.scandir(path):
                     if entry.is_dir(follow_symlinks=False):
@@ -418,47 +399,44 @@ def find_venvs(scan_path: Optional[str] = None, use_mdfind: bool = False, max_de
             except PermissionError:
                 continue
     
-    # 2. Scan specific path or home directory for project venvs
-    scan_root = os.path.expanduser(scan_path) if scan_path else os.path.expanduser("~")
-    
-    def scan_dir(root: str, depth: int = 0):
-        """Recursively scan for venvs with depth limit."""
-        if depth > max_depth:
-            return
+    # 2. Scan common project locations (but not too deep)
+    home = os.path.expanduser("~")
+    for scan_dir in [home]:
+        if not os.path.isdir(scan_dir):
+            continue
         
         try:
-            for entry in os.scandir(root):
+            for entry in os.scandir(scan_dir):
                 if not entry.is_dir(follow_symlinks=False):
                     continue
                 
-                # Skip hidden dirs except project venv names
-                if entry.name.startswith('.') and entry.name not in PROJECT_VENV_NAMES:
-                    continue
-                
-                # Skip common large dirs
-                if entry.name in ['node_modules', 'Library', 'Applications', '.git', '__pycache__']:
-                    continue
-                
-                # Check if this is a venv
+                # Check if this dir itself is a venv
                 if is_venv(entry.path):
                     abs_path = os.path.abspath(entry.path)
                     if abs_path not in found_paths:
                         found_paths.add(abs_path)
                         venvs.append(VirtualEnv(abs_path))
-                else:
-                    # Recurse into subdirectories
-                    scan_dir(entry.path, depth + 1)
+                    continue
+                
+                # Check for common venv subdirs
+                for venv_name in ['.venv', 'venv', 'env', '.env']:
+                    venv_path = os.path.join(entry.path, venv_name)
+                    if is_venv(venv_path):
+                        abs_path = os.path.abspath(venv_path)
+                        if abs_path not in found_paths:
+                            found_paths.add(abs_path)
+                            venvs.append(VirtualEnv(abs_path))
         except PermissionError:
-            pass
-    
-    scan_dir(scan_root)
+            continue
     
     # 3. Use mdfind on macOS for fast discovery
     if use_mdfind and platform.system() == 'Darwin':
         try:
             result = subprocess.run(
                 ['mdfind', 'kMDItemFSName == pyvenv.cfg'],
-                capture_output=True, text=True, timeout=30
+                capture_output=True,
+                text=True,
+                timeout=30
             )
             if result.returncode == 0:
                 for line in result.stdout.strip().split('\n'):
@@ -473,6 +451,7 @@ def find_venvs(scan_path: Optional[str] = None, use_mdfind: bool = False, max_de
             pass
     
     return venvs
+
 
 # ============================================================================
 # Package Analysis
@@ -489,12 +468,13 @@ class PackageAnalyzer:
     def _build_map(self):
         """Build a map of package name -> [(version, venv)]."""
         for venv in self.venvs:
-            if not venv.packages_loaded:
+            if not venv.packages:
                 venv.probe_packages()
             
             for pkg in venv.packages:
-                name = pkg.name.lower()
-                self.package_map[name].append((pkg.version, venv))
+                name = pkg.get('name', '').lower()
+                version = pkg.get('version', '')
+                self.package_map[name].append((version, venv))
     
     def get_duplicates(self) -> Dict[str, List[Tuple[str, VirtualEnv]]]:
         """Return packages that appear in multiple venvs."""
@@ -512,18 +492,7 @@ class PackageAnalyzer:
             if len(versions) > 1:
                 conflicts[name] = versions
         return conflicts
-    
-    def find_package(self, pattern: str) -> List[Tuple[Package, VirtualEnv]]:
-        """Find packages matching a pattern across all venvs."""
-        results = []
-        pattern_lower = pattern.lower()
-        for venv in self.venvs:
-            if not venv.packages_loaded:
-                venv.probe_packages()
-            for pkg in venv.packages:
-                if pattern_lower in pkg.name.lower():
-                    results.append((pkg, venv))
-        return results
+
 
 # ============================================================================
 # Interactive TUI
@@ -535,29 +504,23 @@ class BroomstickTUI:
     def __init__(self, interpreters: List[PythonInterpreter], venvs: List[VirtualEnv]):
         self.interpreters = interpreters
         self.venvs = venvs
-        self.current_view = 'main'
-        self.selected_venv: Optional[VirtualEnv] = None
+        self.current_view = 'main'  # main, interpreters, venvs, packages
         self.cursor = 0
         self.scroll_offset = 0
         self.selected_items: Set[int] = set()
-        self.search_query = ""
-        self.breadcrumb = []
+        self.to_delete: List[Any] = []
     
     def run(self, stdscr):
         """Main TUI loop."""
-        curses.curs_set(0)
-        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)
-        curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)
-        curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)
-        curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)
-        curses.init_pair(5, curses.COLOR_YELLOW, curses.COLOR_BLACK)
+        curses.curs_set(0)  # Hide cursor
+        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_WHITE)  # Selected
+        curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)    # Warning
+        curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)  # Success
+        curses.init_pair(4, curses.COLOR_CYAN, curses.COLOR_BLACK)   # Info
         
         while True:
             stdscr.clear()
             height, width = stdscr.getmaxyx()
-            
-            # Draw breadcrumb
-            self._draw_breadcrumb(stdscr, width)
             
             if self.current_view == 'main':
                 self._draw_main_menu(stdscr, height, width)
@@ -567,17 +530,13 @@ class BroomstickTUI:
                 self._draw_venvs(stdscr, height, width)
             elif self.current_view == 'packages':
                 self._draw_packages(stdscr, height, width)
-            elif self.current_view == 'venv_detail':
-                self._draw_venv_detail(stdscr, height, width)
             
             stdscr.refresh()
             
+            # Handle input
             key = stdscr.getch()
             if key == ord('q'):
-                if len(self.breadcrumb) > 0:
-                    self._go_back()
-                else:
-                    break
+                break
             elif key == curses.KEY_UP:
                 self.cursor = max(0, self.cursor - 1)
             elif key == curses.KEY_DOWN:
@@ -590,49 +549,36 @@ class BroomstickTUI:
                 self._mark_for_deletion()
             elif key == 27:  # ESC
                 self._go_back()
-            elif key == ord('/'):
-                self._start_search(stdscr)
-    
-    def _draw_breadcrumb(self, stdscr, width):
-        """Draw navigation breadcrumb."""
-        if not self.breadcrumb:
-            return
-        
-        crumb = " > ".join(self.breadcrumb)
-        if len(crumb) > width - 4:
-            crumb = "..." + crumb[-(width-7):]
-        stdscr.addstr(0, 2, crumb, curses.color_pair(4))
     
     def _draw_main_menu(self, stdscr, height, width):
+        """Draw main menu."""
         title = "BROOMSTICK - Python Environment Cleaner"
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, (width - len(title)) // 2, title, curses.A_BOLD)
+        stdscr.addstr(0, (width - len(title)) // 2, title, curses.A_BOLD)
         
         menu_items = [
             f"1. Python Interpreters ({len(self.interpreters)} found)",
             f"2. Virtual Environments ({len(self.venvs)} found)",
             "3. Package Analysis",
-            "4. Search",
-            "5. Quit",
+            "4. Quit",
         ]
         
-        item_y = start_y + 3
+        start_y = 3
         for i, item in enumerate(menu_items):
             attr = curses.color_pair(1) if i == self.cursor else curses.A_NORMAL
-            stdscr.addstr(item_y + i, 2, item, attr)
+            stdscr.addstr(start_y + i, 2, item, attr)
         
-        stdscr.addstr(height - 2, 2, "Use ↑/↓ to navigate, Enter to select, 'q' to quit, '/' to search")
+        stdscr.addstr(height - 2, 2, "Use ↑/↓ to navigate, Enter to select, 'q' to quit")
     
     def _draw_interpreters(self, stdscr, height, width):
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, 0, "Python Interpreters", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
+        """Draw Python interpreters list."""
+        stdscr.addstr(0, 0, "Python Interpreters", curses.A_BOLD)
+        stdscr.addstr(1, 0, "-" * width)
         
-        list_height = height - start_y - 5
+        list_height = height - 5
         visible_items = self.interpreters[self.scroll_offset:self.scroll_offset + list_height]
         
         for i, interp in enumerate(visible_items):
-            y = start_y + i + 2
+            y = i + 2
             if y >= height - 3:
                 break
             
@@ -640,6 +586,7 @@ class BroomstickTUI:
             is_selected = idx == self.cursor
             is_marked = idx in self.selected_items
             
+            # Format line
             manager = f"[{interp.manager}]".ljust(12)
             size = format_bytes(interp.size_bytes).rjust(10)
             version = (interp.version or "unknown")[:40]
@@ -654,24 +601,22 @@ class BroomstickTUI:
             if interp.is_system:
                 attr |= curses.color_pair(2)
             
-            try:
-                stdscr.addstr(y, 2, prefix + line, attr)
-            except curses.error:
-                pass
+            stdscr.addstr(y, 2, prefix + line, attr)
         
-        status = f"↑/↓: navigate | Space: mark | d: delete | ESC: back | {len(self.selected_items)} marked"
+        # Status bar
+        status = f"↑/↓: navigate | Space: mark | d: delete marked | ESC: back | {len(self.selected_items)} marked"
         stdscr.addstr(height - 1, 0, status[:width-1])
     
     def _draw_venvs(self, stdscr, height, width):
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, 0, "Virtual Environments", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
+        """Draw virtual environments list."""
+        stdscr.addstr(0, 0, "Virtual Environments", curses.A_BOLD)
+        stdscr.addstr(1, 0, "-" * width)
         
-        list_height = height - start_y - 5
+        list_height = height - 5
         visible_items = self.venvs[self.scroll_offset:self.scroll_offset + list_height]
         
         for i, venv in enumerate(visible_items):
-            y = start_y + i + 2
+            y = i + 2
             if y >= height - 3:
                 break
             
@@ -679,104 +624,36 @@ class BroomstickTUI:
             is_selected = idx == self.cursor
             is_marked = idx in self.selected_items
             
-            manager = f"[{venv.manager}]".ljust(10)
-            size = format_bytes(venv.size_bytes).rjust(9)
-            age = format_datetime(venv.last_modified).rjust(8)
-            proj = venv.project_name[:25]
+            # Format line
+            manager = f"[{venv.manager}]".ljust(12)
+            size = format_bytes(venv.size_bytes).rjust(10)
+            name = venv.name[:30]
             
-            line = f"{manager} {size} {age}  {proj}"
+            line = f"{manager} {size}  {name}"
             if len(line) > width - 4:
                 line = line[:width - 4]
             
             prefix = "[X] " if is_marked else "[ ] "
             
             attr = curses.color_pair(1) if is_selected else curses.A_NORMAL
-            
-            try:
-                stdscr.addstr(y, 2, prefix + line, attr)
-            except curses.error:
-                pass
+            stdscr.addstr(y, 2, prefix + line, attr)
         
+        # Status bar
         total_size = sum(v.size_bytes for v in self.venvs)
         marked_size = sum(self.venvs[i].size_bytes for i in self.selected_items if i < len(self.venvs))
-        status = f"Total: {format_bytes(total_size)} | Marked: {format_bytes(marked_size)} | Space: mark | Enter: detail | d: delete | ESC: back"
-        stdscr.addstr(height - 1, 0, status[:width-1])
-    
-    def _draw_venv_detail(self, stdscr, height, width):
-        """Show detailed view of a venv with its packages."""
-        if not self.selected_venv:
-            self._go_back()
-            return
-        
-        venv = self.selected_venv
-        start_y = 2 if self.breadcrumb else 0
-        
-        # Header
-        stdscr.addstr(start_y, 0, f"Virtual Environment: {venv.project_name}", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
-        
-        # Details
-        y = start_y + 3
-        stdscr.addstr(y, 2, f"Path: {shorten_path(venv.path, width - 10)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Manager: {venv.manager}")
-        y += 1
-        stdscr.addstr(y, 2, f"Size: {format_bytes(venv.size_bytes)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Modified: {format_datetime(venv.last_modified)}")
-        y += 1
-        stdscr.addstr(y, 2, f"Python: {venv.python_version or 'unknown'}")
-        y += 2
-        
-        # Load packages if not loaded
-        if not venv.packages_loaded:
-            stdscr.addstr(y, 2, "Loading packages...", curses.color_pair(5))
-            stdscr.refresh()
-            venv.probe_packages()
-        
-        # Package list
-        stdscr.addstr(y, 2, f"Packages ({len(venv.packages)}):", curses.A_BOLD)
-        y += 1
-        stdscr.addstr(y, 2, "-" * min(width - 4, 76))
-        y += 1
-        
-        list_height = height - y - 3
-        visible_pkgs = venv.packages[self.scroll_offset:self.scroll_offset + list_height]
-        
-        for i, pkg in enumerate(visible_pkgs):
-            if y >= height - 3:
-                break
-            
-            idx = self.scroll_offset + i
-            is_selected = idx == self.cursor
-            is_marked = idx in self.selected_items
-            
-            pkg_line = f"{pkg.name.ljust(30)} {pkg.version.ljust(15)}"
-            if len(pkg_line) > width - 8:
-                pkg_line = pkg_line[:width - 8]
-            
-            prefix = "[X] " if is_marked else "[ ] "
-            attr = curses.color_pair(1) if is_selected else curses.A_NORMAL
-            
-            try:
-                stdscr.addstr(y, 4, prefix + pkg_line, attr)
-            except curses.error:
-                pass
-            y += 1
-        
-        status = f"Space: mark packages | d: uninstall marked | ESC: back | {len(self.selected_items)} marked"
+        status = f"Total: {format_bytes(total_size)} | Marked: {len(self.selected_items)} ({format_bytes(marked_size)}) | Space: mark | d: delete | ESC: back"
         stdscr.addstr(height - 1, 0, status[:width-1])
     
     def _draw_packages(self, stdscr, height, width):
-        start_y = 2 if self.breadcrumb else 0
-        stdscr.addstr(start_y, 0, "Package Analysis", curses.A_BOLD)
-        stdscr.addstr(start_y + 1, 0, "-" * min(width, 80))
+        """Draw package analysis."""
+        stdscr.addstr(0, 0, "Package Analysis", curses.A_BOLD)
+        stdscr.addstr(1, 0, "-" * width)
         
         analyzer = PackageAnalyzer(self.venvs)
         duplicates = analyzer.get_duplicates()
         conflicts = analyzer.get_version_conflicts()
         
-        y = start_y + 3
+        y = 3
         stdscr.addstr(y, 2, f"Total unique packages: {len(analyzer.package_map)}")
         y += 1
         stdscr.addstr(y, 2, f"Duplicated across venvs: {len(duplicates)}")
@@ -787,117 +664,61 @@ class BroomstickTUI:
         stdscr.addstr(y, 2, "Top duplicates:", curses.A_BOLD)
         y += 1
         
-        sorted_dups = sorted(duplicates.items(), key=lambda x: len(x[1]), reverse=True)[:15]
+        sorted_dups = sorted(duplicates.items(), key=lambda x: len(x[1]), reverse=True)[:10]
         for name, installs in sorted_dups:
-            if y >= height - 2:
-                break
             versions = set(v for v, _ in installs)
-            line = f"  {name}: {len(installs)} copies, versions: {', '.join(sorted(versions)[:3])}"
-            try:
+            line = f"  {name}: {len(installs)} copies, versions: {', '.join(sorted(versions))}"
+            if y < height - 2:
                 stdscr.addstr(y, 2, line[:width-4])
-            except curses.error:
-                pass
-            y += 1
+                y += 1
         
         stdscr.addstr(height - 1, 0, "Press ESC to go back")
-    
-    def _start_search(self, stdscr):
-        """Start search mode."""
-        height, width = stdscr.getmaxyx()
-        curses.echo()
-        curses.curs_set(1)
-        stdscr.addstr(height - 1, 0, "Search: ")
-        stdscr.refresh()
-        try:
-            query = stdscr.getstr(height - 1, 8, 30).decode('utf-8')
-            self.search_query = query
-            # Filter venvs based on search
-            # Implementation depends on current view
-        except:
-            pass
-        finally:
-            curses.noecho()
-            curses.curs_set(0)
     
     def _handle_enter(self):
         """Handle Enter key."""
         if self.current_view == 'main':
             if self.cursor == 0:
                 self.current_view = 'interpreters'
-                self.breadcrumb = ['Interpreters']
                 self.cursor = 0
                 self.scroll_offset = 0
             elif self.cursor == 1:
                 self.current_view = 'venvs'
-                self.breadcrumb = ['Virtual Environments']
                 self.cursor = 0
                 self.scroll_offset = 0
             elif self.cursor == 2:
                 self.current_view = 'packages'
-                self.breadcrumb = ['Package Analysis']
             elif self.cursor == 3:
-                # Search
-                pass
-            elif self.cursor == 4:
                 sys.exit(0)
-        elif self.current_view == 'venvs':
-            # Drill down into venv details
-            if self.cursor < len(self.venvs):
-                self.selected_venv = self.venvs[self.cursor]
-                self.current_view = 'venv_detail'
-                self.breadcrumb.append(self.selected_venv.project_name)
-                self.cursor = 0
-                self.scroll_offset = 0
-                self.selected_items.clear()
     
     def _toggle_selection(self):
         """Toggle selection of current item."""
-        if self.current_view in ['interpreters', 'venvs', 'venv_detail']:
+        if self.current_view in ['interpreters', 'venvs']:
             if self.cursor in self.selected_items:
                 self.selected_items.remove(self.cursor)
             else:
                 self.selected_items.add(self.cursor)
     
     def _mark_for_deletion(self):
-        """Delete marked items."""
-        if self.current_view == 'venv_detail' and self.selected_venv:
-            # Uninstall marked packages
-            for idx in sorted(self.selected_items):
-                if idx < len(self.selected_venv.packages):
-                    pkg = self.selected_venv.packages[idx]
-                    self.selected_venv.uninstall_package(pkg.name)
-            self.selected_items.clear()
-            self.selected_venv.probe_packages(force=True)
-        elif self.current_view == 'venvs':
-            # Delete marked venvs
-            for idx in sorted(self.selected_items, reverse=True):
+        """Mark selected items for deletion."""
+        if self.current_view == 'venvs':
+            for idx in self.selected_items:
                 if idx < len(self.venvs):
-                    venv = self.venvs[idx]
-                    try:
-                        shutil.rmtree(venv.path)
-                        self.venvs.pop(idx)
-                    except Exception:
-                        pass
-            self.selected_items.clear()
+                    self.to_delete.append(self.venvs[idx])
+        elif self.current_view == 'interpreters':
+            for idx in self.selected_items:
+                if idx < len(self.interpreters):
+                    interp = self.interpreters[idx]
+                    if not interp.is_system:
+                        self.to_delete.append(interp)
+        
+        self.selected_items.clear()
     
     def _go_back(self):
-        """Go back to previous view."""
-        if self.current_view == 'venv_detail':
-            self.current_view = 'venvs'
-            self.selected_venv = None
-            self.cursor = 0
-            self.scroll_offset = 0
-            self.selected_items.clear()
-            if self.breadcrumb:
-                self.breadcrumb.pop()
-        elif self.current_view in ['interpreters', 'venvs', 'packages']:
-            self.current_view = 'main'
-            self.cursor = 0
-            self.scroll_offset = 0
-            self.breadcrumb.clear()
-        else:
-            self.current_view = 'main'
-            self.breadcrumb.clear()
+        """Go back to main menu."""
+        self.current_view = 'main'
+        self.cursor = 0
+        self.scroll_offset = 0
+
 
 # ============================================================================
 # CLI Commands
@@ -909,10 +730,11 @@ def cmd_scan(args):
     interpreters = find_python_interpreters(use_mdfind=args.mdfind)
     
     print("Scanning for virtual environments...")
-    venvs = find_venvs(scan_path=args.path, use_mdfind=args.mdfind)
+    venvs = find_venvs(use_mdfind=args.mdfind)
     
+    # Probe packages if requested
     if not args.no_packages:
-        print(f"Probing packages in {len(venvs)} environments...")
+        print("Probing packages (this may take a while)...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.parallel) as executor:
             executor.map(lambda v: v.probe_packages(), venvs)
     
@@ -929,6 +751,7 @@ def cmd_scan(args):
     else:
         print(f"\nFound {len(interpreters)} Python interpreters")
         print(f"Found {len(venvs)} virtual environments")
+
 
 def cmd_interpreters(args):
     """List all Python interpreters."""
@@ -948,94 +771,53 @@ def cmd_interpreters(args):
     total_size = sum(i.size_bytes for i in interpreters)
     print(f"\nTotal size: {format_bytes(total_size)}")
 
+
 def cmd_venvs(args):
     """List all virtual environments."""
-    venvs = find_venvs(scan_path=args.path, use_mdfind=args.mdfind)
+    venvs = find_venvs(use_mdfind=args.mdfind)
     
     print(f"\nFound {len(venvs)} virtual environments:\n")
-    print(f"{'Manager':<10} {'Size':<10} {'Age':<8} {'Project':<30} {'Path'}")
-    print("-" * 100)
+    print(f"{'Manager':<12} {'Size':<10} {'Name':<30} {'Modified'}")
+    print("-" * 80)
     
     for venv in sorted(venvs, key=lambda x: x.size_bytes, reverse=True):
         manager = f"[{venv.manager}]"
         size = format_bytes(venv.size_bytes)
-        age = format_datetime(venv.last_modified)
-        project = venv.project_name[:30]
-        path = shorten_path(venv.path, 50)
-        print(f"{manager:<10} {size:<10} {age:<8} {project:<30} {path}")
+        name = venv.name[:30]
+        modified = format_datetime(venv.last_modified)
+        print(f"{manager:<12} {size:<10} {name:<30} {modified}")
     
     total_size = sum(v.size_bytes for v in venvs)
     print(f"\nTotal size: {format_bytes(total_size)}")
 
-def cmd_packages(args):
-    """List or analyze packages."""
-    if args.venv:
-        # List packages in specific venv
-        venv_path = os.path.abspath(args.venv)
-        if not is_venv(venv_path):
-            print(f"Error: {venv_path} is not a virtual environment")
-            return 1
-        
-        venv = VirtualEnv(venv_path)
-        venv.probe_packages()
-        
-        print(f"\nPackages in {venv.project_name}:\n")
-        print(f"{'Package':<30} {'Version':<15}")
-        print("-" * 50)
-        
-        for pkg in sorted(venv.packages, key=lambda p: p.name):
-            print(f"{pkg.name:<30} {pkg.version:<15}")
-        
-        print(f"\nTotal: {len(venv.packages)} packages")
-    else:
-        # Analyze packages across all venvs
-        print("Scanning virtual environments...")
-        venvs = find_venvs(use_mdfind=args.mdfind)
-        
-        print("Analyzing packages...")
-        analyzer = PackageAnalyzer(venvs)
-        
-        duplicates = analyzer.get_duplicates()
-        conflicts = analyzer.get_version_conflicts()
-        
-        print(f"\n{'='*80}")
-        print(f"Package Analysis")
-        print(f"{'='*80}\n")
-        print(f"Total unique packages: {len(analyzer.package_map)}")
-        print(f"Packages in multiple venvs: {len(duplicates)}")
-        print(f"Packages with version conflicts: {len(conflicts)}\n")
-        
-        if duplicates:
-            print("Top 20 most duplicated packages:\n")
-            sorted_dups = sorted(duplicates.items(), key=lambda x: len(x[1]), reverse=True)[:20]
-            
-            for name, installs in sorted_dups:
-                versions = set(v for v, _ in installs)
-                print(f"  {name}: {len(installs)} copies")
-                print(f"    Versions: {', '.join(sorted(versions))}")
 
-def cmd_uninstall(args):
-    """Uninstall a package from a venv."""
-    venv_path = os.path.abspath(args.from_venv)
-    if not is_venv(venv_path):
-        print(f"Error: {venv_path} is not a virtual environment")
-        return 1
+def cmd_packages(args):
+    """Analyze packages across environments."""
+    print("Scanning virtual environments...")
+    venvs = find_venvs(use_mdfind=args.mdfind)
     
-    venv = VirtualEnv(venv_path)
+    print("Analyzing packages...")
+    analyzer = PackageAnalyzer(venvs)
     
-    if args.dry_run:
-        print(f"[DRY RUN] Would uninstall {args.package} from {venv.project_name}")
-        return 0
+    duplicates = analyzer.get_duplicates()
+    conflicts = analyzer.get_version_conflicts()
     
-    print(f"Uninstalling {args.package} from {venv.project_name}...")
-    success = venv.uninstall_package(args.package, dry_run=args.dry_run)
+    print(f"\n{'='*80}")
+    print(f"Package Analysis")
+    print(f"{'='*80}\n")
+    print(f"Total unique packages: {len(analyzer.package_map)}")
+    print(f"Packages in multiple venvs: {len(duplicates)}")
+    print(f"Packages with version conflicts: {len(conflicts)}\n")
     
-    if success:
-        print(f"✓ Successfully uninstalled {args.package}")
-        return 0
-    else:
-        print(f"✗ Failed to uninstall {args.package}")
-        return 1
+    if duplicates:
+        print("Top 20 most duplicated packages:\n")
+        sorted_dups = sorted(duplicates.items(), key=lambda x: len(x[1]), reverse=True)[:20]
+        
+        for name, installs in sorted_dups:
+            versions = set(v for v, _ in installs)
+            print(f"  {name}: {len(installs)} copies")
+            print(f"    Versions: {', '.join(sorted(versions))}")
+
 
 def cmd_clean(args):
     """Delete environments or interpreters."""
@@ -1080,34 +862,12 @@ def cmd_clean(args):
     
     return 0
 
-def cmd_search(args):
-    """Search for venvs or packages."""
-    print(f"Searching for '{args.pattern}'...")
-    
-    # Search venvs
-    venvs = find_venvs(use_mdfind=args.mdfind)
-    matching_venvs = [v for v in venvs if args.pattern.lower() in v.project_name.lower() or args.pattern.lower() in v.path.lower()]
-    
-    if matching_venvs:
-        print(f"\nFound {len(matching_venvs)} matching virtual environments:\n")
-        for venv in matching_venvs:
-            print(f"  [{venv.manager}] {venv.project_name} ({format_bytes(venv.size_bytes)})")
-            print(f"    {venv.path}")
-    
-    # Search packages
-    analyzer = PackageAnalyzer(venvs)
-    matching_pkgs = analyzer.find_package(args.pattern)
-    
-    if matching_pkgs:
-        print(f"\nFound package '{args.pattern}' in {len(matching_pkgs)} environments:\n")
-        for pkg, venv in matching_pkgs[:20]:
-            print(f"  {pkg.name} {pkg.version} in {venv.project_name}")
 
 def cmd_interactive(args):
     """Launch interactive TUI."""
     print("Scanning for Python resources...")
     interpreters = find_python_interpreters(use_mdfind=args.mdfind)
-    venvs = find_venvs(scan_path=getattr(args, 'path', None), use_mdfind=args.mdfind)
+    venvs = find_venvs(use_mdfind=args.mdfind)
     
     print(f"Found {len(interpreters)} interpreters and {len(venvs)} virtual environments")
     print("Launching interactive mode...\n")
@@ -1117,6 +877,7 @@ def cmd_interactive(args):
     tui = BroomstickTUI(interpreters, venvs)
     curses.wrapper(tui.run)
 
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -1124,7 +885,7 @@ def cmd_interactive(args):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog='broomstick',
-        description='Comprehensive Python environment and package cleaner'
+        description='Clean up Python environments, interpreters, and packages'
     )
     parser.add_argument('--mdfind', action='store_true', help='Use mdfind on macOS for faster scanning')
     
@@ -1133,26 +894,17 @@ def build_parser() -> argparse.ArgumentParser:
     # scan
     scan_parser = subparsers.add_parser('scan', help='Scan for all Python resources')
     scan_parser.add_argument('--json', help='Save results to JSON file')
-    scan_parser.add_argument('--path', help='Scan specific path')
     scan_parser.add_argument('--no-packages', action='store_true', help='Skip package probing')
-    scan_parser.add_argument('--parallel', type=int, default=4, help='Parallel workers')
+    scan_parser.add_argument('--parallel', type=int, default=4, help='Parallel workers for package probing')
     
     # interpreters
     interp_parser = subparsers.add_parser('interpreters', help='List all Python interpreters')
     
     # venvs
     venv_parser = subparsers.add_parser('venvs', help='List all virtual environments')
-    venv_parser.add_argument('--path', help='Scan specific path for venvs')
     
     # packages
-    pkg_parser = subparsers.add_parser('packages', help='List or analyze packages')
-    pkg_parser.add_argument('--venv', help='List packages in specific venv')
-    
-    # uninstall
-    uninst_parser = subparsers.add_parser('uninstall', help='Uninstall package from venv')
-    uninst_parser.add_argument('package', help='Package name to uninstall')
-    uninst_parser.add_argument('--from', dest='from_venv', required=True, help='Venv path')
-    uninst_parser.add_argument('--dry-run', action='store_true', help='Show what would be done')
+    pkg_parser = subparsers.add_parser('packages', help='Analyze packages')
     
     # clean
     clean_parser = subparsers.add_parser('clean', help='Delete environments or interpreters')
@@ -1160,15 +912,11 @@ def build_parser() -> argparse.ArgumentParser:
     clean_parser.add_argument('--dry-run', action='store_true', help='Show what would be deleted')
     clean_parser.add_argument('--yes', action='store_true', help='Skip confirmation')
     
-    # search
-    search_parser = subparsers.add_parser('search', help='Search for venvs or packages')
-    search_parser.add_argument('pattern', help='Search pattern')
-    
     # interactive (default)
-    interactive_parser = subparsers.add_parser('interactive', help='Launch interactive TUI')
-    interactive_parser.add_argument('--path', help='Scan specific path for venvs')
+    interactive_parser = subparsers.add_parser('interactive', help='Launch interactive TUI (default)')
     
     return parser
+
 
 def main():
     parser = build_parser()
@@ -1184,14 +932,11 @@ def main():
         return cmd_venvs(args)
     elif args.command == 'packages':
         return cmd_packages(args)
-    elif args.command == 'uninstall':
-        return cmd_uninstall(args)
     elif args.command == 'clean':
         return cmd_clean(args)
-    elif args.command == 'search':
-        return cmd_search(args)
     
     return 0
+
 
 if __name__ == '__main__':
     sys.exit(main())
