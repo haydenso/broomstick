@@ -21,8 +21,9 @@ brew install https://raw.githubusercontent.com/haydenso/broomstick/main/broomsti
 
 ### Option 2: Install from PyPI (when published)
 ```bash
-pip install broomstick
-broomstick
+# When broomstick is published to PyPI you will be able to install with:
+# pip install broomstick
+# (Currently not published to PyPI)
 ```
 
 ### Option 3: Install with pip from GitHub

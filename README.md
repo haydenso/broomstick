@@ -69,18 +69,7 @@ brew install broomstick
 ```
 
 ### pip (All Platforms)
-```bash
-# From PyPI (when published)
-pip install broomstick
-
-# From GitHub
-pip install git+https://github.com/haydenso/broomstick.git
-
-# Development mode
-git clone https://github.com/haydenso/broomstick.git
-cd broomstick
-pip install -e .
-```
+See `INSTALL.md` for pip installation instructions and development setup.
 
 ### Direct Download
 ```bash
@@ -119,6 +108,12 @@ When you launch Broomstick, you'll see a beautiful mode selection screen:
 - `/` - Search/filter current list
 - `ESC` - Go back to previous screen
 - `q` - Quit (or go back from mode selection)
+
+### Demo
+
+Below is a demo screenshot showing the mode selection screen and example environment list. The same image is included in the repository at `assets/demo-screenshot.png`.
+
+![Broomstick demo screenshot](assets/demo-screenshot.png)
 
 **Workflow Example:**
 1. Start Broomstick → See mode selection screen
